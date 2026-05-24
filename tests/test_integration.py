@@ -80,7 +80,7 @@ class TestBuildAgent:
         assert "check_registrations" in seen_tools
         assert "disable_registration" in seen_tools
         assert "remove_registration" in seen_tools
-        assert "disable_tool" in seen_tools
+        assert "disable_tool" not in seen_tools
         assert "register_guard" not in seen_tools
 
     def test_advanced_registration_tools_can_be_hidden(self, agent_dir):
