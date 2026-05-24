@@ -32,7 +32,8 @@ Other hook slots:
 - `register_guard` — pre-execution guard on tool calls (allow/deny/modify)
 - `register_tool_filter` — filter available primitives with native tool preparation
 - `validate_tool` / `disable_tool` — promote or quarantine registered tools
-- `list_registrations` / `remove_registration` — manage registrations
+- `list_registrations` / `check_registrations` — inspect registration health
+- `remove_registration` — manage registrations
 
 **`complete()`** allows the agent to call its own model for sub-tasks
 (summarization, code generation, structured extraction).
@@ -79,7 +80,8 @@ giving the agent memory across runs.
 pa init                    Create agent.yaml and pa/registrations.yaml
 pa run <prompt>            Run once, resume from saved history
 pa run --no-history <p>    Run ignoring saved history
-pa repl                    Interactive REPL (/exit, /list, /clear)
+pa repl                    Interactive REPL (/exit, /list, /health, /clear)
+pa doctor                  Smoke-check registration health
 pa clear-history           Delete saved history
 ```
 

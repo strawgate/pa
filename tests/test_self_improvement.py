@@ -1,5 +1,7 @@
-from pa.manifest import Manifest
-from pa.registration_tools import list_registrations, register_instruction, register_tool
+import json
+
+from pa.manifest import Manifest, Registration
+from pa.registration_tools import check_registrations, list_registrations, register_instruction, register_tool
 
 
 class TestSelfImprovement:
@@ -67,3 +69,29 @@ async def test_register_tool_sync_wrapper_works_inside_event_loop(tmp_cwd):
     reg = Manifest.load().find("double")
     assert reg is not None
     assert reg.status == "active"
+
+
+def test_check_registrations_records_health(tmp_cwd):
+    m = Manifest()
+    m.add(Registration(slot="instruction", name="broken", code="missing_name"))
+    m.save()
+
+    report = json.loads(check_registrations())
+
+    assert report[0]["name"] == "broken"
+    assert report[0]["check"] == "error"
+    reg = Manifest.load().find("broken")
+    assert reg is not None
+    assert reg.last_error
+    assert reg.last_run_status == "error"
+
+
+def test_check_registrations_reports_compaction_policy_errors(tmp_cwd):
+    m = Manifest()
+    m.add(Registration(slot="compaction", name="drops_current", code="[0]"))
+    m.save()
+
+    report = json.loads(check_registrations())
+
+    assert report[0]["check"] == "error"
+    assert "current request" in report[0]["last_error"]
