@@ -11,6 +11,7 @@ from pydantic_ai_harness import CodeMode
 from pa import primitives
 from pa.builtin_instructions import PA_BUILTIN_INSTRUCTIONS
 from pa.capability import PaRegistrations
+from pa.pydantic_ai_compat import apply_pydantic_ai_v2_harness_compat
 
 DEFAULT_AGENT_SPEC = Path("agent.yaml")
 
@@ -135,6 +136,8 @@ def build_agent(
         model: Optional model override. If provided, replaces the model in the YAML.
                Useful for testing with TestModel or FunctionModel.
     """
+    apply_pydantic_ai_v2_harness_compat()
+
     # If no explicit model override, try to resolve from provider/route fields
     if model is None:
         model = _resolve_model_from_yaml(Path(agent_spec_path))
