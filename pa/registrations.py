@@ -4,12 +4,14 @@ from typing import Any, Awaitable, Callable
 
 from pydantic_ai import RunContext
 from pydantic_ai.messages import ModelMessage, ToolCallPart
-from pydantic_ai.tools import ToolDefinition
+from pydantic_ai.toolsets import FunctionToolset
+from pydantic_ai.tools import Tool, ToolDefinition
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_core import to_jsonable_python
 
-from pa.manifest import Registration
+from pa.manifest import Manifest, Registration
 from pa.monty_bridge import execute_registration, MontyBridgeError
+from pa.registration_tools import validate_args_against_schema
 
 
 def make_instruction_fn(reg: Registration) -> Callable[[RunContext[Any]], Awaitable[str | None]]:
@@ -90,3 +92,47 @@ def make_guard_hook(reg: Registration):
 
     _guard.__name__ = f"pa_guard_{reg.name}"
     return _guard
+
+
+def make_registered_toolset(manifest: Manifest) -> FunctionToolset[Any]:
+    """Create native Pydantic AI tools for active tool registrations."""
+    toolset: FunctionToolset[Any] = FunctionToolset(id="pa-registered-tools", max_retries=2)
+
+    for reg in manifest.by_slot("tool"):
+        if reg.status != "active":
+            continue
+        toolset.add_tool(_make_registered_tool(reg))
+
+    return toolset
+
+
+def _make_registered_tool(reg: Registration) -> Tool[Any]:
+    async def _tool(**kwargs: Any) -> Any:
+        try:
+            res = await execute_registration(
+                slot="tool",
+                name=reg.name,
+                code=reg.code,
+                inputs={"args": kwargs},
+            )
+        except MontyBridgeError as e:
+            raise ModelRetry(f"registered tool {reg.name!r} failed: {e}") from e
+        return res.value
+
+    def _validate_args(ctx: RunContext[Any], **kwargs: Any) -> None:
+        try:
+            validate_args_against_schema(reg.parameters_json_schema, kwargs)
+        except ValueError as e:
+            raise ModelRetry(f"invalid arguments for registered tool {reg.name!r}: {e}") from e
+
+    _tool.__name__ = reg.name
+    _tool.__doc__ = reg.description or f"User-defined tool: {reg.name}"
+    return Tool.from_schema(
+        _tool,
+        name=reg.name,
+        description=reg.description or f"User-defined tool: {reg.name}",
+        json_schema=reg.parameters_json_schema,
+        takes_ctx=False,
+        sequential=True,
+        args_validator=_validate_args,
+    )

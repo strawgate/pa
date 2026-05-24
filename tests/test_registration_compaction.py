@@ -3,7 +3,8 @@ import pytest
 from pa.manifest import Manifest, Registration
 from pa.capability import PaRegistrations
 from pydantic_ai import Agent
-from pydantic_ai.models.test import TestModel
+from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.models.function import FunctionModel
 
 
 @pytest.mark.asyncio
@@ -19,7 +20,10 @@ async def test_compaction_reduces_history(tmp_cwd):
     )
     m.save()
 
-    agent = Agent(TestModel(), capabilities=[PaRegistrations()])
+    agent = Agent(
+        FunctionModel(lambda messages, info: ModelResponse(parts=[TextPart(content="ok")])),
+        capabilities=[PaRegistrations()],
+    )
     # First run
     result1 = await agent.run("first")
     history = result1.all_messages()

@@ -1,31 +1,51 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any, Awaitable
 
 from pydantic_ai import RunContext
-from pydantic_ai.capabilities import AbstractCapability, ProcessHistory, Hooks
-from pydantic_ai.messages import ToolCallPart
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
+from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai.tools import ToolDefinition
 
-from pa.manifest import Manifest, MANIFEST_PATH_DEFAULT
+from pa.manifest import MANIFEST_PATH_DEFAULT, Manifest
+from pa.monty_bridge import MontyBridgeError, execute_registration
+from pa.registration_tools import make_registration_toolset
 from pa.registrations import (
-    make_instruction_fn,
     make_compaction_fn,
     make_guard_hook,
+    make_instruction_fn,
+    make_registered_toolset,
 )
+
+_FILTERABLE_PRIMITIVES = frozenset({"read_file", "write_file", "bash", "http_get", "complete"})
+_CANCELLED_TOOL_MESSAGE = "Tool call was cancelled before it returned."
 
 
 @dataclass
 class PaRegistrations(AbstractCapability[Any]):
-    """Loads ./pa/registrations.yaml and wires every entry into the agent."""
+    """Loads ./pa/registrations.yaml and wires entries through native Pydantic AI hooks."""
 
     manifest_path: str = str(MANIFEST_PATH_DEFAULT)
-    _sub: list[AbstractCapability[Any]] = field(default_factory=list, repr=False)
+    _manifest: Manifest = field(init=False, repr=False)
+    _compaction: Callable[[list[ModelMessage]], Awaitable[list[ModelMessage]]] | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
-        manifest = Manifest.load(self.manifest_path)
-        self._sub = self._build(manifest)
+        self._manifest = Manifest.load(self.manifest_path)
+        comp = self._manifest.by_slot("compaction")
+        if comp:
+            self._compaction = make_compaction_fn(comp[0])
 
     @classmethod
     def from_spec(cls, args: Any = (), kwargs: Any = {}) -> "PaRegistrations":
@@ -33,17 +53,62 @@ class PaRegistrations(AbstractCapability[Any]):
             return cls(**kwargs)
         return cls()
 
-    def apply(self, visitor: Callable[[AbstractCapability[Any]], None]) -> None:
-        """Expose sub-capabilities (Hooks, ProcessHistory, etc.) to the framework."""
-        for cap in self._sub:
-            cap.apply(visitor)
+    def get_toolset(self) -> AbstractToolset[Any] | None:
+        toolset = make_registration_toolset(self.manifest_path)
+        registered = make_registered_toolset(self._manifest)
+        for tool in registered.tools.values():
+            toolset.add_tool(tool)
+        return toolset
 
     def get_instructions(self):
-        """Delegate instruction collection to the sub-capability."""
-        for cap in self._sub:
-            if isinstance(cap, _InstructionCapability):
-                return cap.get_instructions()
-        return None
+        instructions = [make_instruction_fn(r) for r in self._manifest.by_slot("instruction")]
+
+        async def _registration_errors(ctx: RunContext[Any]) -> str | None:
+            errors = [f"{r.slot}/{r.name}: {r.last_error}" for r in self._manifest.registrations if r.last_error]
+            if not errors:
+                return None
+            return "[pa: registration issues]\n" + "\n".join(errors)
+
+        instructions.append(_registration_errors)
+        return instructions
+
+    async def prepare_tools(
+        self,
+        ctx: RunContext[Any],
+        tool_defs: list[ToolDefinition],
+    ) -> list[ToolDefinition]:
+        """Filter primitive tools through registered tool_filter snippets."""
+        filters = self._manifest.by_slot("tool_filter")
+        if not filters:
+            return tool_defs
+
+        candidate_names = [td.name for td in tool_defs if td.name in _FILTERABLE_PRIMITIVES]
+        allowed = list(candidate_names)
+        changed = False
+        for reg in filters:
+            try:
+                res = await execute_registration(
+                    slot="tool_filter",
+                    name=reg.name,
+                    code=reg.code,
+                    inputs={"tool_names": allowed},
+                )
+            except MontyBridgeError as e:
+                msg = str(e)
+                if reg.last_error != msg:
+                    reg.last_error = msg
+                    changed = True
+                continue
+            if reg.last_error:
+                reg.last_error = ""
+                changed = True
+            allowed = [name for name in res.value if name in allowed]
+
+        if changed:
+            self._manifest.save(self.manifest_path)
+
+        allowed_set = set(allowed)
+        return [td for td in tool_defs if td.name not in _FILTERABLE_PRIMITIVES or td.name in allowed_set]
 
     async def before_tool_execute(
         self,
@@ -53,38 +118,93 @@ class PaRegistrations(AbstractCapability[Any]):
         tool_def: ToolDefinition,
         args: dict[str, Any],
     ) -> dict[str, Any]:
-        """Delegate before_tool_execute to sub-capabilities (guards)."""
-        for cap in self._sub:
-            args = await cap.before_tool_execute(ctx, call=call, tool_def=tool_def, args=args)
+        """Run registered guards through native before-tool hooks."""
+        for reg in self._manifest.by_slot("guard"):
+            hook = make_guard_hook(reg)
+            args = await hook(ctx, call=call, tool_def=tool_def, args=args)
         return args
 
-    def _build(self, manifest: Manifest) -> list[AbstractCapability[Any]]:
-        caps: list[AbstractCapability[Any]] = []
-
-        inst_fns = [make_instruction_fn(r) for r in manifest.by_slot("instruction")]
-        if inst_fns:
-            caps.append(_InstructionCapability(fns=inst_fns))
-
-        comp = manifest.by_slot("compaction")
-        if comp:
-            caps.append(ProcessHistory(make_compaction_fn(comp[0])))
-
-        guards = manifest.by_slot("guard")
-        if guards:
-            hooks = Hooks()
-            for r in guards:
-                hooks.on.before_tool_execute(make_guard_hook(r))
-            caps.append(hooks)
-
-        # tool_filter registrations are applied at build time in runtime.py,
-        # not as runtime capabilities, so nothing to do here.
-
-        return caps
+    async def before_model_request(
+        self,
+        ctx: RunContext[Any],
+        request_context: Any,
+    ) -> Any:
+        """Repair orphaned tool calls/results before provider validation sees history."""
+        messages = patch_orphaned_tool_parts(request_context.messages)
+        if self._compaction is not None:
+            compacted = await self._compaction(messages)
+            request_context.messages = patch_orphaned_tool_parts(compacted)
+        else:
+            request_context.messages = messages
+        return request_context
 
 
-@dataclass
-class _InstructionCapability(AbstractCapability[Any]):
-    fns: list[Callable[..., Any]] = field(default_factory=list)
+def patch_orphaned_tool_parts(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Return messages with synthetic returns for orphaned calls and orphaned returns removed."""
+    if not messages:
+        return messages
+    messages = _patch_orphaned_calls(messages)
+    patched = _remove_orphaned_returns(messages)
+    return patched or messages
 
-    def get_instructions(self):
-        return list(self.fns)
+
+def _patch_orphaned_calls(messages: list[ModelMessage]) -> list[ModelMessage]:
+    patched: list[ModelMessage] = []
+    skip_next = False
+    for i, msg in enumerate(messages):
+        if skip_next:
+            skip_next = False
+            continue
+        patched.append(msg)
+        if not isinstance(msg, ModelResponse):
+            continue
+        calls = [part for part in msg.parts if isinstance(part, ToolCallPart)]
+        if not calls:
+            continue
+        next_msg = messages[i + 1] if i + 1 < len(messages) else None
+        answered = set()
+        if isinstance(next_msg, ModelRequest):
+            for part in next_msg.parts:
+                if isinstance(part, (RetryPromptPart, ToolReturnPart)) and part.tool_call_id:
+                    answered.add(part.tool_call_id)
+        missing = [call for call in calls if call.tool_call_id not in answered]
+        if not missing:
+            continue
+        synthetic = [
+            ToolReturnPart(
+                tool_name=call.tool_name,
+                content=_CANCELLED_TOOL_MESSAGE,
+                tool_call_id=call.tool_call_id,
+            )
+            for call in missing
+        ]
+        if isinstance(next_msg, ModelRequest):
+            patched.append(ModelRequest(parts=[*synthetic, *next_msg.parts], timestamp=next_msg.timestamp))
+            skip_next = True
+        else:
+            patched.append(ModelRequest(parts=synthetic))
+    return patched
+
+
+def _remove_orphaned_returns(messages: list[ModelMessage]) -> list[ModelMessage]:
+    patched: list[ModelMessage] = []
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, ModelRequest):
+            patched.append(msg)
+            continue
+        prev_msg = messages[i - 1] if i > 0 else None
+        call_ids: set[str] = set()
+        if isinstance(prev_msg, ModelResponse):
+            call_ids = {
+                part.tool_call_id
+                for part in prev_msg.parts
+                if isinstance(part, ToolCallPart) and part.tool_call_id is not None
+            }
+        parts = [
+            part
+            for part in msg.parts
+            if not (isinstance(part, ToolReturnPart) and part.tool_call_id and part.tool_call_id not in call_ids)
+        ]
+        if parts:
+            patched.append(ModelRequest(parts=parts, timestamp=msg.timestamp, instructions=msg.instructions))
+    return patched

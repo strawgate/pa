@@ -21,14 +21,17 @@ pa repl          # interactive REPL with history
 - **Native tools**: registration functions and user-defined tools registered
   from prior runs — callable directly, visible in the agent's tool list.
 
-**Self-evolution:** the agent can call `register_tool(name, description, code)`
-to create a persistent tool. On the next run it appears as a native tool.
+**Self-evolution:** the agent can call
+`register_tool(name, description, code, parameters_json_schema, example_args)`
+to create a persistent tool. Tools without an example are saved as drafts.
+Only validated active tools appear as native tools on the next run.
 
 Other hook slots:
 - `register_instruction` — dynamic system prompt additions
 - `register_compaction` — history compaction (single slot)
 - `register_guard` — pre-execution guard on tool calls (allow/deny/modify)
-- `register_tool_filter` — filter available primitives at build time
+- `register_tool_filter` — filter available primitives with native tool preparation
+- `validate_tool` / `disable_tool` — promote or quarantine registered tools
 - `list_registrations` / `remove_registration` — manage registrations
 
 **`complete()`** allows the agent to call its own model for sub-tasks
@@ -39,10 +42,11 @@ All registrations persist in `pa/registrations.yaml`.
 ## Concepts
 
 - **Registration**: a named Monty snippet bound to a slot. Created via
-  `register_tool`, `register_instruction`, `register_compaction`,
-  `register_guard`, or `register_tool_filter`.
+  `register_tool`, `validate_tool`, `register_instruction`,
+  `register_compaction`, `register_guard`, or `register_tool_filter`.
 - **Slot**: one of `tool`, `instruction`, `compaction`, `guard`, `tool_filter`.
-  `compaction` is single-cardinality; the rest stack.
+  `compaction` is single-cardinality; the rest stack. Tool registrations have
+  `draft`, `active`, or `disabled` status.
 - **Primitives**: `read_file`, `write_file`, `bash`, `http_get`, `complete`.
   Sandboxed inside `run_code` via Monty. The `tools` list in `agent.yaml`
   controls which primitives are sandboxed.

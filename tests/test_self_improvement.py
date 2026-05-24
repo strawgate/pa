@@ -1,5 +1,5 @@
 from pa.manifest import Manifest
-from pa.registration_tools import register_instruction, list_registrations
+from pa.registration_tools import list_registrations, register_instruction, register_tool
 
 
 class TestSelfImprovement:
@@ -44,5 +44,26 @@ class TestSelfImprovement:
 
         # Step 2: Build the capability (simulating next agent construction)
         cap = PaRegistrations()
-        # Verify that instruction functions were created
-        assert cap._sub  # At least one sub-capability was built
+        # Verify that instruction functions are exposed through the native capability hook
+        assert cap.get_instructions()
+
+
+async def test_register_tool_sync_wrapper_works_inside_event_loop(tmp_cwd):
+    """The public sync helper should not depend on the caller lacking an event loop."""
+    result = register_tool(
+        "double",
+        "Double an integer.",
+        'args["x"] * 2',
+        {
+            "type": "object",
+            "properties": {"x": {"type": "integer"}},
+            "required": ["x"],
+            "additionalProperties": False,
+        },
+        {"x": 2},
+    )
+
+    assert result.startswith("OK:")
+    reg = Manifest.load().find("double")
+    assert reg is not None
+    assert reg.status == "active"

@@ -51,23 +51,28 @@ instructions: |
   ## Self-evolution tools
 
     These are **native tool calls** — call them directly, not inside `run_code`.
-    Build reusable tools that persist across runs:
+    Prefer saving repeatable knowledge as instructions or memory-like notes.
+    Build executable tools only when you have a concrete example call to test.
 
   ```python
-  register_tool(name, description, code)
-    # code receives `args: dict`, returns any value.
-    # The tool is callable by name on the next run.
+  register_tool(name, description, code, parameters_json_schema=None, example_args=None)
+    # code receives `args: dict`, returns any JSON-serializable value.
+    # Without example_args the tool is saved as a draft and is not callable yet.
+    # With example_args the tool is validated, activated, and callable next run.
+
+  validate_tool(name, example_args)
+    # validates a draft tool with a concrete example and activates it on success.
   ```
 
   Other hooks:
   - `register_instruction(name, code)` — dynamic system prompt additions
   - `register_compaction(name, code)` — history compaction (single slot)
   - `register_guard(name, code)` — pre-execution guard on tool calls
-  - `register_tool_filter(name, code)` — filter available tools at build time
-  - `list_registrations()` / `remove_registration(name)` — manage registrations
+  - `register_tool_filter(name, code)` — filter primitive tools dynamically
+  - `list_registrations()` / `disable_tool(name)` / `remove_registration(name)` — manage registrations
 
     Registrations persist in `./pa/registrations.yaml` and activate as native
-    tools on the next run.
+    tools on the next run once their status is `active`.
 
   ## How to approach problems
 
@@ -93,10 +98,12 @@ instructions: |
      change something.
   4. Don't give up. If your first approach fails, try an alternative. You are
      responsible for solving the task, not just attempting it.
-  5. **Register tools proactively.** Before finishing, ask yourself: "Did I write
-     code that searches files, calls an API, transforms data, or performs any
-     repeatable operation?" If yes — and there is no registered tool for it yet —
-     call `register_tool(name, description, code)`. Future runs get it for free.
+  5. **Register tools carefully.** Before finishing, ask yourself: "Did I write
+     code that performs a proven repeatable operation?" If yes, and there is no
+     registered tool for it yet, call `register_tool` with a real JSON schema
+     and example args from the workflow you just proved. If you cannot provide
+     an example, save a draft and validate it later. Future runs get only
+     validated active tools.
   6. Use `complete()` for sub-tasks: summarize long outputs, extract structured
      data, plan next steps, or generate a code snippet. Pass large content via
      the `data=` parameter rather than embedding it in the prompt string.
