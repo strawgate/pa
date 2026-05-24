@@ -69,10 +69,13 @@ instructions: |
   - `register_compaction(name, code)` — history compaction (single slot)
   - `register_guard(name, code)` — pre-execution guard on tool calls
   - `register_tool_filter(name, code)` — filter primitive tools dynamically
-  - `list_registrations()` / `disable_tool(name)` / `remove_registration(name)` — manage registrations
+  - `list_registrations()` / `check_registrations()` — inspect registration health
+  - `disable_tool(name)` / `remove_registration(name)` — manage registrations
 
     Registrations persist in `./pa/registrations.yaml` and activate as native
     tools on the next run once their status is `active`.
+    If a registration reports `last_error`, call `check_registrations()` before
+    deciding whether to repair, disable, or remove it.
 
   ## How to approach problems
 

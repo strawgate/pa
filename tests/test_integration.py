@@ -53,6 +53,7 @@ class TestBuildAgent:
         assert "register_tool" in seen_tools
         assert "register_instruction" in seen_tools
         assert "list_registrations" in seen_tools
+        assert "check_registrations" in seen_tools
         assert "remove_registration" in seen_tools
 
     def test_run_code_description_lists_all_tools(self, agent_dir):
@@ -124,6 +125,35 @@ class TestBuildAgent:
         reg = manifest["registrations"][0]
         assert reg["name"] == "broken_filter"
         assert reg["last_error"]
+        assert reg["last_run_status"] == "error"
+
+    def test_guard_failures_are_recorded_without_crashing_agent(self, agent_dir):
+        """Broken guards retry the tool call and persist health."""
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "guard",
+                "name": "broken_guard",
+                "code": "missing_name",
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        call_count = 0
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(parts=[ToolCallPart(tool_name="list_registrations", args={}, tool_call_id="tc1")])
+            return ModelResponse(parts=[TextPart(content="recovered")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("trigger guard")
+
+        assert result.output == "recovered"
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        reg = manifest["registrations"][0]
+        assert reg["last_error"]
+        assert reg["last_run_status"] == "error"
 
 
 class TestSelfImprovementLoop:
@@ -385,6 +415,10 @@ class TestSelfImprovementLoop:
         result = build_agent(model=FunctionModel(scripted)).run_sync("call bad")
         assert result.output == "recovered"
         assert saw_retry
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        reg = manifest["registrations"][0]
+        assert reg["last_error"]
+        assert reg["last_run_status"] == "error"
 
     def test_list_registrations_via_run_code(self, agent_dir):
         """After registering natively, list_registrations returns the entry."""

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from pydantic_ai.toolsets import FunctionToolset
+from pydantic_core import to_jsonable_python
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
 from pa.manifest import (
     MANIFEST_PATH_DEFAULT,
@@ -18,6 +20,13 @@ from pa.manifest import (
     default_tool_schema,
 )
 from pa.monty_bridge import MontyBridgeError, compile_registration, execute_registration
+from pa.registration_runtime import (
+    RegistrationExecutionError,
+    compaction_policy_error,
+    record_registration_result,
+    run_registration,
+    stringify_error,
+)
 from pa.slots import SlotName
 
 _SCALAR_JSON_TYPES = {
@@ -94,8 +103,7 @@ def validate_args_against_schema(schema: dict[str, Any], args: dict[str, Any]) -
 
 
 def _stringify_error(e: Exception) -> str:
-    text = str(e)
-    return text if len(text) <= 500 else text[:500] + "...[truncated]"
+    return stringify_error(e)
 
 
 def _run_coro_sync(fn: Callable[[], Coroutine[Any, Any, Any]]) -> Any:
@@ -282,22 +290,103 @@ def list_registrations() -> str:
     return _list_registrations(path=MANIFEST_PATH_DEFAULT)
 
 
+def _registration_summary(r: Registration) -> dict[str, Any]:
+    health = r.last_run_status
+    if r.status == "disabled":
+        health = "disabled"
+    elif r.last_error:
+        health = "error"
+    elif r.status == "draft":
+        health = "draft"
+    return {
+        "slot": r.slot,
+        "name": r.name,
+        "status": r.status,
+        "health": health,
+        "description": r.description,
+        "lines": r.code.count("\n") + 1,
+        "preview": r.code[:120] + ("..." if len(r.code) > 120 else ""),
+        "last_error": r.last_error,
+        "last_run_status": r.last_run_status,
+        "last_run_at": r.last_run_at,
+        "last_ok_at": r.last_ok_at,
+        "last_duration_ms": r.last_duration_ms,
+    }
+
+
 def _list_registrations(*, path: Path | str) -> str:
     m = _load(path)
-    out = []
-    for r in m.registrations:
-        out.append(
-            {
-                "slot": r.slot,
-                "name": r.name,
-                "status": r.status,
-                "description": r.description,
-                "lines": r.code.count("\n") + 1,
-                "preview": r.code[:120] + ("..." if len(r.code) > 120 else ""),
-                "last_error": r.last_error,
-            }
-        )
+    out = [_registration_summary(r) for r in m.registrations]
     return json.dumps(out, indent=2)
+
+
+def check_registrations() -> str:
+    """Smoke-check active registrations and return a JSON health report."""
+    return _run_coro_sync(lambda: _check_registrations(path=MANIFEST_PATH_DEFAULT))
+
+
+async def _check_registrations(*, path: Path | str) -> str:
+    m = _load(path)
+    out: list[dict[str, Any]] = []
+    for reg in m.registrations:
+        entry = _registration_summary(reg)
+        inputs = _smoke_inputs(reg)
+        if reg.status == "disabled":
+            entry.update({"check": "skipped", "reason": "disabled"})
+        elif reg.slot == "tool" and reg.status != "active":
+            entry.update({"check": "skipped", "reason": f"tool is {reg.status}"})
+        elif inputs is None:
+            entry.update({"check": "skipped", "reason": "no smoke-test inputs available"})
+        else:
+            try:
+                if reg.slot == "tool":
+                    validate_args_against_schema(reg.parameters_json_schema, inputs["args"])
+                result = await run_registration(reg, inputs=inputs, manifest=m, manifest_path=path)
+                policy_error = ""
+                if reg.slot == "compaction":
+                    policy_error = compaction_policy_error(result.value, len(inputs["messages"]))
+                if policy_error:
+                    record_registration_result(reg, ok=False, error=policy_error, manifest=m, path=path)
+                    entry.update({"check": "error", "error": policy_error})
+                else:
+                    entry.update({"check": "ok"})
+            except RegistrationExecutionError as e:
+                entry.update({"check": "error", "error": str(e)})
+            except ValueError as e:
+                record_registration_result(
+                    reg,
+                    ok=False,
+                    error=f"invalid smoke-test args: {e}",
+                    manifest=m,
+                    path=path,
+                )
+                entry.update({"check": "error", "error": str(e)})
+        entry.update(_registration_summary(reg))
+        out.append(entry)
+    return json.dumps(out, indent=2)
+
+
+def _smoke_inputs(reg: Registration) -> dict[str, Any] | None:
+    if reg.slot == "instruction":
+        return {"ctx_summary": {"agent_name": "pa-doctor", "run_step": 0}}
+    if reg.slot == "compaction":
+        return {
+            "messages": [
+                to_jsonable_python(ModelRequest(parts=[UserPromptPart(content="health check")])),
+                to_jsonable_python(ModelResponse(parts=[TextPart(content="ok")])),
+            ]
+        }
+    if reg.slot == "guard":
+        return {"tool_name": "read_file", "args": {"path": "README.md"}}
+    if reg.slot == "tool_filter":
+        return {"tool_names": ["read_file", "write_file", "bash", "http_get", "complete"]}
+    if reg.slot == "tool":
+        if reg.validated_example_args is not None:
+            return {"args": reg.validated_example_args}
+        if reg.parameters_json_schema.get("required"):
+            return None
+        return {"args": {}}
+    return None
 
 
 def remove_registration(name: str) -> str:
@@ -358,6 +447,10 @@ def make_registration_toolset(manifest_path: str | Path) -> FunctionToolset[Any]
         """Return a JSON-encoded list of registration entries."""
         return _list_registrations(path=path)
 
+    async def check_registrations_bound() -> str:
+        """Smoke-check active registrations and return a JSON health report."""
+        return await _check_registrations(path=path)
+
     def remove_registration_bound(name: str) -> str:
         """Remove the registration with the given name."""
         return _remove_registration(name, path=path)
@@ -377,6 +470,9 @@ def make_registration_toolset(manifest_path: str | Path) -> FunctionToolset[Any]
     toolset.tool_plain(name="disable_tool", description=disable_tool_bound.__doc__)(disable_tool_bound)
     toolset.tool_plain(name="list_registrations", description=list_registrations_bound.__doc__)(
         list_registrations_bound
+    )
+    toolset.tool_plain(name="check_registrations", description=check_registrations_bound.__doc__)(
+        check_registrations_bound
     )
     toolset.tool_plain(name="remove_registration", description=remove_registration_bound.__doc__)(
         remove_registration_bound

@@ -18,7 +18,7 @@ from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai.tools import ToolDefinition
 
 from pa.manifest import MANIFEST_PATH_DEFAULT, Manifest
-from pa.monty_bridge import MontyBridgeError, execute_registration
+from pa.registration_runtime import RegistrationExecutionError, run_registration
 from pa.registration_tools import make_registration_toolset
 from pa.registrations import (
     make_compaction_fn,
@@ -45,7 +45,11 @@ class PaRegistrations(AbstractCapability[Any]):
         self._manifest = Manifest.load(self.manifest_path)
         comp = self._manifest.by_slot("compaction")
         if comp:
-            self._compaction = make_compaction_fn(comp[0])
+            self._compaction = make_compaction_fn(
+                comp[0],
+                manifest=self._manifest,
+                manifest_path=self.manifest_path,
+            )
 
     @classmethod
     def from_spec(cls, args: Any = (), kwargs: Any = {}) -> "PaRegistrations":
@@ -55,13 +59,16 @@ class PaRegistrations(AbstractCapability[Any]):
 
     def get_toolset(self) -> AbstractToolset[Any] | None:
         toolset = make_registration_toolset(self.manifest_path)
-        registered = make_registered_toolset(self._manifest)
+        registered = make_registered_toolset(self._manifest, manifest_path=self.manifest_path)
         for tool in registered.tools.values():
             toolset.add_tool(tool)
         return toolset
 
     def get_instructions(self):
-        instructions = [make_instruction_fn(r) for r in self._manifest.by_slot("instruction")]
+        instructions = [
+            make_instruction_fn(r, manifest=self._manifest, manifest_path=self.manifest_path)
+            for r in self._manifest.by_slot("instruction")
+        ]
 
         async def _registration_errors(ctx: RunContext[Any]) -> str | None:
             errors = [f"{r.slot}/{r.name}: {r.last_error}" for r in self._manifest.registrations if r.last_error]
@@ -84,28 +91,17 @@ class PaRegistrations(AbstractCapability[Any]):
 
         candidate_names = [td.name for td in tool_defs if td.name in _FILTERABLE_PRIMITIVES]
         allowed = list(candidate_names)
-        changed = False
         for reg in filters:
             try:
-                res = await execute_registration(
-                    slot="tool_filter",
-                    name=reg.name,
-                    code=reg.code,
+                res = await run_registration(
+                    reg,
                     inputs={"tool_names": allowed},
+                    manifest=self._manifest,
+                    manifest_path=self.manifest_path,
                 )
-            except MontyBridgeError as e:
-                msg = str(e)
-                if reg.last_error != msg:
-                    reg.last_error = msg
-                    changed = True
+            except RegistrationExecutionError:
                 continue
-            if reg.last_error:
-                reg.last_error = ""
-                changed = True
             allowed = [name for name in res.value if name in allowed]
-
-        if changed:
-            self._manifest.save(self.manifest_path)
 
         allowed_set = set(allowed)
         return [td for td in tool_defs if td.name not in _FILTERABLE_PRIMITIVES or td.name in allowed_set]
@@ -120,7 +116,7 @@ class PaRegistrations(AbstractCapability[Any]):
     ) -> dict[str, Any]:
         """Run registered guards through native before-tool hooks."""
         for reg in self._manifest.by_slot("guard"):
-            hook = make_guard_hook(reg)
+            hook = make_guard_hook(reg, manifest=self._manifest, manifest_path=self.manifest_path)
             args = await hook(ctx, call=call, tool_def=tool_def, args=args)
         return args
 

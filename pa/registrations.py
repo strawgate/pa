@@ -10,24 +10,35 @@ from pydantic_ai.exceptions import ModelRetry
 from pydantic_core import to_jsonable_python
 
 from pa.manifest import Manifest, Registration
-from pa.monty_bridge import execute_registration, MontyBridgeError
+from pa.registration_runtime import (
+    RegistrationExecutionError,
+    compaction_policy_error,
+    normalize_compaction_indices,
+    record_registration_result,
+    run_registration,
+)
 from pa.registration_tools import validate_args_against_schema
 
 
-def make_instruction_fn(reg: Registration) -> Callable[[RunContext[Any]], Awaitable[str | None]]:
+def make_instruction_fn(
+    reg: Registration,
+    *,
+    manifest: Manifest | None = None,
+    manifest_path: str = "",
+) -> Callable[[RunContext[Any]], Awaitable[str | None]]:
     async def _instruction(ctx: RunContext[Any]) -> str | None:
         ctx_summary = {
             "agent_name": getattr(ctx.agent, "name", None) if ctx.agent else None,
             "run_step": ctx.run_step,
         }
         try:
-            res = await execute_registration(
-                slot="instruction",
-                name=reg.name,
-                code=reg.code,
+            res = await run_registration(
+                reg,
                 inputs={"ctx_summary": ctx_summary},
+                manifest=manifest,
+                manifest_path=manifest_path,
             )
-        except MontyBridgeError as e:
+        except RegistrationExecutionError as e:
             return f"[pa: instruction {reg.name!r} failed: {e}]"
         return res.value or None
 
@@ -35,23 +46,29 @@ def make_instruction_fn(reg: Registration) -> Callable[[RunContext[Any]], Awaita
     return _instruction
 
 
-def make_compaction_fn(reg: Registration):
+def make_compaction_fn(reg: Registration, *, manifest: Manifest | None = None, manifest_path: str = ""):
     async def _compact(messages: list[ModelMessage]) -> list[ModelMessage]:
         if not messages:
             return messages
         jsonable = [to_jsonable_python(m) for m in messages]
         try:
-            res = await execute_registration(
-                slot="compaction",
-                name=reg.name,
-                code=reg.code,
+            res = await run_registration(
+                reg,
                 inputs={"messages": jsonable},
+                manifest=manifest,
+                manifest_path=manifest_path,
             )
-        except MontyBridgeError:
+        except RegistrationExecutionError:
             return messages  # fail-safe: do not drop history on bridge error
         out: list[ModelMessage] = []
         n = len(messages)
-        for idx in res.value:
+        indices = normalize_compaction_indices(res.value, n)
+        policy_error = compaction_policy_error(res.value, n)
+        if policy_error:
+            record_registration_result(reg, ok=False, error=policy_error, manifest=manifest, path=manifest_path)
+        if n - 1 not in indices:
+            indices.append(n - 1)
+        for idx in indices:
             if 0 <= idx < n:
                 out.append(messages[idx])
         return out or messages
@@ -60,7 +77,7 @@ def make_compaction_fn(reg: Registration):
     return _compact
 
 
-def make_guard_hook(reg: Registration):
+def make_guard_hook(reg: Registration, *, manifest: Manifest | None = None, manifest_path: str = ""):
     async def _guard(
         ctx: RunContext[Any],
         *,
@@ -69,13 +86,13 @@ def make_guard_hook(reg: Registration):
         args: dict[str, Any],
     ) -> dict[str, Any]:
         try:
-            res = await execute_registration(
-                slot="guard",
-                name=reg.name,
-                code=reg.code,
+            res = await run_registration(
+                reg,
                 inputs={"tool_name": call.tool_name, "args": args},
+                manifest=manifest,
+                manifest_path=manifest_path,
             )
-        except MontyBridgeError as e:
+        except RegistrationExecutionError as e:
             raise ModelRetry(f"guard {reg.name!r} crashed: {e}") from e
         action = res.value["action"]
         if action == "allow":
@@ -94,28 +111,28 @@ def make_guard_hook(reg: Registration):
     return _guard
 
 
-def make_registered_toolset(manifest: Manifest) -> FunctionToolset[Any]:
+def make_registered_toolset(manifest: Manifest, *, manifest_path: str = "") -> FunctionToolset[Any]:
     """Create native Pydantic AI tools for active tool registrations."""
     toolset: FunctionToolset[Any] = FunctionToolset(id="pa-registered-tools", max_retries=2)
 
     for reg in manifest.by_slot("tool"):
         if reg.status != "active":
             continue
-        toolset.add_tool(_make_registered_tool(reg))
+        toolset.add_tool(_make_registered_tool(reg, manifest=manifest, manifest_path=manifest_path))
 
     return toolset
 
 
-def _make_registered_tool(reg: Registration) -> Tool[Any]:
+def _make_registered_tool(reg: Registration, *, manifest: Manifest, manifest_path: str) -> Tool[Any]:
     async def _tool(**kwargs: Any) -> Any:
         try:
-            res = await execute_registration(
-                slot="tool",
-                name=reg.name,
-                code=reg.code,
+            res = await run_registration(
+                reg,
                 inputs={"args": kwargs},
+                manifest=manifest,
+                manifest_path=manifest_path,
             )
-        except MontyBridgeError as e:
+        except RegistrationExecutionError as e:
             raise ModelRetry(f"registered tool {reg.name!r} failed: {e}") from e
         return res.value
 
@@ -123,6 +140,13 @@ def _make_registered_tool(reg: Registration) -> Tool[Any]:
         try:
             validate_args_against_schema(reg.parameters_json_schema, kwargs)
         except ValueError as e:
+            record_registration_result(
+                reg,
+                ok=False,
+                error=f"invalid arguments: {e}",
+                manifest=manifest,
+                path=manifest_path,
+            )
             raise ModelRetry(f"invalid arguments for registered tool {reg.name!r}: {e}") from e
 
     _tool.__name__ = reg.name

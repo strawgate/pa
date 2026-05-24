@@ -85,6 +85,15 @@ def clear_history() -> None:
 
 
 @app.command()
+def doctor() -> None:
+    """Smoke-check registrations and print their health."""
+    _ensure_config()
+    from pa.registration_tools import check_registrations
+
+    console.print_json(json=check_registrations())
+
+
+@app.command()
 def run(
     prompt: str, no_history: bool = typer.Option(False, "--no-history", help="Ignore saved history for this run.")
 ) -> None:
@@ -110,7 +119,7 @@ def repl(no_history: bool = typer.Option(False, "--no-history", help="Start with
     _try_logfire()
     _ensure_config()
     agent = build_agent()
-    console.print("[bold]pa repl[/bold] — /exit /list /clear")
+    console.print("[bold]pa repl[/bold] — /exit /list /health /clear")
     history = [] if no_history else _history.load()
     if history:
         console.print(f"[dim]resuming from {len(history)} saved messages[/dim]")
@@ -129,6 +138,11 @@ def repl(no_history: bool = typer.Option(False, "--no-history", help="Start with
             from pa.registration_tools import list_registrations
 
             console.print(list_registrations())
+            continue
+        if cmd == "/health":
+            from pa.registration_tools import check_registrations
+
+            console.print_json(json=check_registrations())
             continue
         if cmd == "/clear":
             history = []

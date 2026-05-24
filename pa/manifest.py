@@ -11,6 +11,7 @@ from pa.slots import SLOTS, SlotName, Cardinality
 MANIFEST_PATH_DEFAULT = Path("pa") / "registrations.yaml"
 
 RegistrationStatus = Literal["draft", "active", "disabled"]
+RegistrationRunStatus = Literal["unknown", "ok", "error"]
 
 
 def default_tool_schema() -> dict[str, Any]:
@@ -32,6 +33,10 @@ class Registration(BaseModel):
     status: RegistrationStatus = "active"
     validated_example_args: dict[str, Any] | None = None
     last_error: str = ""
+    last_run_status: RegistrationRunStatus = "unknown"
+    last_run_at: str = ""
+    last_ok_at: str = ""
+    last_duration_ms: float | None = None
 
 
 class Manifest(BaseModel):
