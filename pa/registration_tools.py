@@ -272,6 +272,11 @@ def disable_tool(name: str, reason: str = "") -> str:
     return _disable_tool(name, reason, path=MANIFEST_PATH_DEFAULT)
 
 
+def disable_registration(name: str, reason: str = "") -> str:
+    """Disable any registration without deleting its source."""
+    return _disable_registration(name, reason, path=MANIFEST_PATH_DEFAULT)
+
+
 def _disable_tool(name: str, reason: str = "", *, path: Path | str) -> str:
     m = _load(path)
     reg = m.find(name)
@@ -279,10 +284,23 @@ def _disable_tool(name: str, reason: str = "", *, path: Path | str) -> str:
         return f"ERROR: no registration named {name!r}"
     if reg.slot != "tool":
         return f"ERROR: registration {name!r} is a {reg.slot}, not a tool"
+    _disable_loaded_registration(m, reg, reason, path=path)
+    return f"OK: disabled tool/{name}."
+
+
+def _disable_registration(name: str, reason: str = "", *, path: Path | str) -> str:
+    m = _load(path)
+    reg = m.find(name)
+    if reg is None:
+        return f"ERROR: no registration named {name!r}"
+    _disable_loaded_registration(m, reg, reason, path=path)
+    return f"OK: disabled {reg.slot}/{name}."
+
+
+def _disable_loaded_registration(m: Manifest, reg: Registration, reason: str, *, path: Path | str) -> None:
     reg.status = "disabled"
     reg.last_error = reason
     _save(m, path)
-    return f"OK: disabled tool/{name}."
 
 
 def list_registrations() -> str:
@@ -443,6 +461,10 @@ def make_registration_toolset(manifest_path: str | Path) -> FunctionToolset[Any]
         """Disable a registered tool without deleting its source."""
         return _disable_tool(name, reason, path=path)
 
+    def disable_registration_bound(name: str, reason: str = "") -> str:
+        """Disable any registration without deleting its source."""
+        return _disable_registration(name, reason, path=path)
+
     def list_registrations_bound() -> str:
         """Return a JSON-encoded list of registration entries."""
         return _list_registrations(path=path)
@@ -468,6 +490,9 @@ def make_registration_toolset(manifest_path: str | Path) -> FunctionToolset[Any]
     toolset.tool_plain(name="register_tool", description=register_tool_bound.__doc__)(register_tool_bound)
     toolset.tool_plain(name="validate_tool", description=validate_tool_bound.__doc__)(validate_tool_bound)
     toolset.tool_plain(name="disable_tool", description=disable_tool_bound.__doc__)(disable_tool_bound)
+    toolset.tool_plain(name="disable_registration", description=disable_registration_bound.__doc__)(
+        disable_registration_bound
+    )
     toolset.tool_plain(name="list_registrations", description=list_registrations_bound.__doc__)(
         list_registrations_bound
     )

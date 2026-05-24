@@ -64,6 +64,9 @@ class Manifest(BaseModel):
     def by_slot(self, slot: SlotName) -> list[Registration]:
         return [r for r in self.registrations if r.slot == slot]
 
+    def active_by_slot(self, slot: SlotName) -> list[Registration]:
+        return [r for r in self.by_slot(slot) if r.status == "active"]
+
     def find(self, name: str) -> Registration | None:
         return next((r for r in self.registrations if r.name == name), None)
 

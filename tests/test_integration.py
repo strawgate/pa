@@ -15,6 +15,7 @@ import yaml
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel, AgentInfo
 
+from pa.manifest import Manifest
 from pa.runtime import build_agent
 
 
@@ -54,6 +55,7 @@ class TestBuildAgent:
         assert "register_instruction" in seen_tools
         assert "list_registrations" in seen_tools
         assert "check_registrations" in seen_tools
+        assert "disable_registration" in seen_tools
         assert "remove_registration" in seen_tools
 
     def test_run_code_description_lists_all_tools(self, agent_dir):
@@ -127,6 +129,32 @@ class TestBuildAgent:
         assert reg["last_error"]
         assert reg["last_run_status"] == "error"
 
+    def test_disabled_tool_filter_is_not_applied(self, agent_dir):
+        """Disabled tool_filter registrations are ignored by native prepare_tools."""
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "tool_filter",
+                "name": "disabled_read_only",
+                "code": '["read_file"]',
+                "status": "disabled",
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        description = ""
+
+        def capture_desc(messages, info: AgentInfo):
+            nonlocal description
+            for t in info.function_tools:
+                if t.name == "run_code":
+                    description = t.description
+            return ModelResponse(parts=[TextPart(content="hi")])
+
+        build_agent(model=FunctionModel(capture_desc)).run_sync("test")
+
+        assert "read_file" in description
+        assert "bash" in description
+
     def test_guard_failures_are_recorded_without_crashing_agent(self, agent_dir):
         """Broken guards retry the tool call and persist health."""
         manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
@@ -154,6 +182,35 @@ class TestBuildAgent:
         reg = manifest["registrations"][0]
         assert reg["last_error"]
         assert reg["last_run_status"] == "error"
+
+    def test_disabled_guard_does_not_execute(self, agent_dir):
+        """Disabled guards do not participate in before_tool_execute."""
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "guard",
+                "name": "disabled_guard",
+                "code": "missing_name",
+                "status": "disabled",
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        call_count = 0
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(parts=[ToolCallPart(tool_name="list_registrations", args={}, tool_call_id="tc1")])
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("trigger disabled guard")
+
+        assert result.output == "done"
+        reg = Manifest.load(agent_dir / "pa" / "registrations.yaml").find("disabled_guard")
+        assert reg is not None
+        assert reg.last_run_status == "unknown"
+        assert reg.last_error == ""
 
 
 class TestSelfImprovementLoop:
@@ -223,6 +280,29 @@ class TestSelfImprovementLoop:
         assert any("Cheerio" in c for c in dynamic_contents), (
             f"Expected 'Cheerio' in dynamic instructions, got: {dynamic_contents}"
         )
+
+    def test_disabled_instruction_is_not_injected(self, agent_dir):
+        """Disabled instruction registrations are ignored by get_instructions."""
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "instruction",
+                "name": "disabled_note",
+                "code": '"Never include this."',
+                "status": "disabled",
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        instruction_parts = []
+
+        def check_model(messages, info: AgentInfo):
+            instruction_parts.extend(info.model_request_parameters.instruction_parts or [])
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        build_agent(model=FunctionModel(check_model)).run_sync("test")
+
+        dynamic_contents = [p.content for p in instruction_parts if getattr(p, "dynamic", False)]
+        assert all("Never include this" not in c for c in dynamic_contents)
 
     def test_register_guard_via_run_code(self, agent_dir):
         """Model calls register_guard as a native tool; manifest persists it."""

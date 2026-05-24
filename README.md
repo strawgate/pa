@@ -33,7 +33,7 @@ Other hook slots:
 - `register_tool_filter` — filter available primitives with native tool preparation
 - `validate_tool` / `disable_tool` — promote or quarantine registered tools
 - `list_registrations` / `check_registrations` — inspect registration health
-- `remove_registration` — manage registrations
+- `disable_registration` / `remove_registration` — manage registrations
 
 **`complete()`** allows the agent to call its own model for sub-tasks
 (summarization, code generation, structured extraction).
@@ -47,7 +47,8 @@ All registrations persist in `pa/registrations.yaml`.
   `register_compaction`, `register_guard`, or `register_tool_filter`.
 - **Slot**: one of `tool`, `instruction`, `compaction`, `guard`, `tool_filter`.
   `compaction` is single-cardinality; the rest stack. Tool registrations have
-  `draft`, `active`, or `disabled` status.
+  `draft`, `active`, or `disabled` status. Disabled registrations remain in the
+  manifest but are not wired into Pydantic AI hooks or toolsets.
 - **Primitives**: `read_file`, `write_file`, `bash`, `http_get`, `complete`.
   Sandboxed inside `run_code` via Monty. The `tools` list in `agent.yaml`
   controls which primitives are sandboxed.

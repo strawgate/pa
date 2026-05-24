@@ -70,10 +70,11 @@ instructions: |
   - `register_guard(name, code)` — pre-execution guard on tool calls
   - `register_tool_filter(name, code)` — filter primitive tools dynamically
   - `list_registrations()` / `check_registrations()` — inspect registration health
-  - `disable_tool(name)` / `remove_registration(name)` — manage registrations
+  - `disable_registration(name)` / `disable_tool(name)` / `remove_registration(name)` — manage registrations
 
     Registrations persist in `./pa/registrations.yaml` and activate as native
     tools on the next run once their status is `active`.
+    Disabled registrations stay in the manifest but do not run.
     If a registration reports `last_error`, call `check_registrations()` before
     deciding whether to repair, disable, or remove it.
 

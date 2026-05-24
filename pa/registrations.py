@@ -115,9 +115,7 @@ def make_registered_toolset(manifest: Manifest, *, manifest_path: str = "") -> F
     """Create native Pydantic AI tools for active tool registrations."""
     toolset: FunctionToolset[Any] = FunctionToolset(id="pa-registered-tools", max_retries=2)
 
-    for reg in manifest.by_slot("tool"):
-        if reg.status != "active":
-            continue
+    for reg in manifest.active_by_slot("tool"):
         toolset.add_tool(_make_registered_tool(reg, manifest=manifest, manifest_path=manifest_path))
 
     return toolset

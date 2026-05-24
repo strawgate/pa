@@ -43,7 +43,7 @@ class PaRegistrations(AbstractCapability[Any]):
 
     def __post_init__(self) -> None:
         self._manifest = Manifest.load(self.manifest_path)
-        comp = self._manifest.by_slot("compaction")
+        comp = self._manifest.active_by_slot("compaction")
         if comp:
             self._compaction = make_compaction_fn(
                 comp[0],
@@ -67,11 +67,15 @@ class PaRegistrations(AbstractCapability[Any]):
     def get_instructions(self):
         instructions = [
             make_instruction_fn(r, manifest=self._manifest, manifest_path=self.manifest_path)
-            for r in self._manifest.by_slot("instruction")
+            for r in self._manifest.active_by_slot("instruction")
         ]
 
         async def _registration_errors(ctx: RunContext[Any]) -> str | None:
-            errors = [f"{r.slot}/{r.name}: {r.last_error}" for r in self._manifest.registrations if r.last_error]
+            errors = [
+                f"{r.slot}/{r.name}: {r.last_error}"
+                for r in self._manifest.registrations
+                if r.status == "active" and r.last_error
+            ]
             if not errors:
                 return None
             return "[pa: registration issues]\n" + "\n".join(errors)
@@ -85,7 +89,7 @@ class PaRegistrations(AbstractCapability[Any]):
         tool_defs: list[ToolDefinition],
     ) -> list[ToolDefinition]:
         """Filter primitive tools through registered tool_filter snippets."""
-        filters = self._manifest.by_slot("tool_filter")
+        filters = self._manifest.active_by_slot("tool_filter")
         if not filters:
             return tool_defs
 
@@ -115,7 +119,7 @@ class PaRegistrations(AbstractCapability[Any]):
         args: dict[str, Any],
     ) -> dict[str, Any]:
         """Run registered guards through native before-tool hooks."""
-        for reg in self._manifest.by_slot("guard"):
+        for reg in self._manifest.active_by_slot("guard"):
             hook = make_guard_hook(reg, manifest=self._manifest, manifest_path=self.manifest_path)
             args = await hook(ctx, call=call, tool_def=tool_def, args=args)
         return args

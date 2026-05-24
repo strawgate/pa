@@ -18,6 +18,15 @@ class TestManifestRoundTrip:
         assert loaded.find("no_bash") is not None
         assert loaded.find("keep_read") is not None
 
+    def test_active_by_slot_filters_disabled_registrations(self, tmp_cwd):
+        m = Manifest()
+        m.add(Registration(slot="instruction", name="active_note", code='"active"'))
+        m.add(Registration(slot="instruction", name="disabled_note", code='"disabled"', status="disabled"))
+
+        active = m.active_by_slot("instruction")
+
+        assert [r.name for r in active] == ["active_note"]
+
     def test_two_compaction_raises_cardinality_error(self, tmp_cwd):
         m = Manifest()
         m.add(Registration(slot="compaction", name="compact_one", code="[0]"))

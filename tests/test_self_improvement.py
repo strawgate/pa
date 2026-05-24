@@ -1,7 +1,13 @@
 import json
 
 from pa.manifest import Manifest, Registration
-from pa.registration_tools import check_registrations, list_registrations, register_instruction, register_tool
+from pa.registration_tools import (
+    check_registrations,
+    disable_registration,
+    list_registrations,
+    register_instruction,
+    register_tool,
+)
 
 
 class TestSelfImprovement:
@@ -95,3 +101,20 @@ def test_check_registrations_reports_compaction_policy_errors(tmp_cwd):
 
     assert report[0]["check"] == "error"
     assert "current request" in report[0]["last_error"]
+
+
+def test_disable_registration_quarantines_any_slot(tmp_cwd):
+    m = Manifest()
+    m.add(Registration(slot="guard", name="broken_guard", code="missing_name"))
+    m.save()
+
+    result = disable_registration("broken_guard", "quarantined")
+
+    assert result == "OK: disabled guard/broken_guard."
+    reg = Manifest.load().find("broken_guard")
+    assert reg is not None
+    assert reg.status == "disabled"
+    assert reg.last_error == "quarantined"
+    report = json.loads(check_registrations())
+    assert report[0]["check"] == "skipped"
+    assert report[0]["reason"] == "disabled"
