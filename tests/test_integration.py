@@ -15,6 +15,7 @@ import yaml
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel, AgentInfo
 
+from pa.builtin_instructions import PA_BUILTIN_INSTRUCTIONS
 from pa.manifest import Manifest
 from pa.registration_tools import SELF_EVOLUTION_TOOL_MAX_RETRIES, check_registrations
 from pa.runtime import build_agent
@@ -154,6 +155,28 @@ class TestBuildAgent:
 
         assert result.output == "done"
         assert "agent.yaml" in observed_return
+
+    def test_agent_template_instructions_are_user_owned(self, agent_dir):
+        """pa's built-in instructions are injected by code, not copied into agent.yaml."""
+        agent_yaml = yaml.safe_load((agent_dir / "agent.yaml").read_text())
+        assert "Tool organization" not in agent_yaml["instructions"]
+        assert "Registration code is Monty" not in agent_yaml["instructions"]
+        assert "self-evolving agent working in this project" in agent_yaml["instructions"]
+
+    def test_builtin_and_user_instructions_are_both_present(self, agent_dir):
+        """build_agent layers code-owned pa guidance with user-owned template instructions."""
+        instruction_text = ""
+
+        def capture_instructions(messages, info: AgentInfo):
+            nonlocal instruction_text
+            parts = info.model_request_parameters.instruction_parts or []
+            instruction_text = "\n".join(part.content for part in parts)
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        build_agent(model=FunctionModel(capture_instructions)).run_sync("test")
+
+        assert "self-evolving agent working in this project" in instruction_text
+        assert PA_BUILTIN_INSTRUCTIONS.splitlines()[0] in instruction_text
 
     def test_tool_filter_uses_native_prepare_tools(self, agent_dir):
         """tool_filter registrations filter primitives before CodeMode builds run_code."""
