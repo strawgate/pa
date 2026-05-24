@@ -4,7 +4,17 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
 
-SlotName = Literal["instruction", "compaction", "guard", "tool_filter", "tool"]
+SlotName = Literal[
+    "instruction",
+    "compaction",
+    "guard",
+    "before_tool_hook",
+    "after_tool_hook",
+    "before_run_hook",
+    "after_run_hook",
+    "tool_filter",
+    "tool",
+]
 
 
 class Cardinality(str, Enum):
@@ -46,6 +56,41 @@ SLOTS: dict[SlotName, SlotDef] = {
             "{'action': 'allow'} | {'action': 'deny', 'reason': str} | "
             "{'action': 'modify', 'args': dict}. First deny wins."
         ),
+    ),
+    "before_tool_hook": SlotDef(
+        name="before_tool_hook",
+        cardinality=Cardinality.MANY,
+        return_shape="dict[str, Any]",
+        inputs=("tool_name", "args"),
+        description=(
+            "Receives the about-to-execute tool call. Returns "
+            "{'action': 'allow'} | {'action': 'deny', 'reason': str} | "
+            "{'action': 'modify', 'args': dict}. First deny wins."
+        ),
+    ),
+    "after_tool_hook": SlotDef(
+        name="after_tool_hook",
+        cardinality=Cardinality.MANY,
+        return_shape="dict[str, Any]",
+        inputs=("tool_name", "args", "result"),
+        description=(
+            "Receives a completed tool call. Returns {'action': 'allow'} | "
+            "{'action': 'modify', 'result': Any} | {'action': 'retry', 'reason': str}."
+        ),
+    ),
+    "before_run_hook": SlotDef(
+        name="before_run_hook",
+        cardinality=Cardinality.MANY,
+        return_shape="str",
+        inputs=("ctx_summary",),
+        description="Runs once before a run. Returns an optional string injected as run-local guidance.",
+    ),
+    "after_run_hook": SlotDef(
+        name="after_run_hook",
+        cardinality=Cardinality.MANY,
+        return_shape="dict[str, Any]",
+        inputs=("ctx_summary", "output"),
+        description="Runs once after a run. Returns {'action': 'allow'} or {'action': 'replace_output', 'output': str}.",
     ),
     "tool_filter": SlotDef(
         name="tool_filter",

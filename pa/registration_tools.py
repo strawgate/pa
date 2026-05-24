@@ -38,6 +38,119 @@ _SCALAR_JSON_TYPES = {
     "array": list,
 }
 
+_DESC_REGISTER_INSTRUCTION = """\
+Register durable guidance that is injected into future model requests.
+
+Use when you learned a lasting user preference, project convention, workflow rule,
+or reminder that should shape future reasoning. The Monty code receives
+`ctx_summary: dict` and must return a string. Do not use this for one-off facts
+that only matter in the current answer.
+"""
+
+_DESC_REGISTER_BEFORE_RUN_HOOK = """\
+Register a hook that runs once at the start of each future agent run.
+
+Use for run-local setup or reminders, such as checking project state, surfacing an
+active checklist, or choosing a working mode. The Monty code receives
+`ctx_summary: dict` and must return a string. That string is injected as
+run-local guidance for the model request.
+"""
+
+_DESC_REGISTER_AFTER_RUN_HOOK = """\
+Register a hook that runs once after each future agent run completes.
+
+Use for end-of-run policy such as normalizing final output, adding a required
+signoff, or preserving a lightweight summary. The Monty code receives
+`ctx_summary: dict` and `output`, and must return `{"action": "allow"}` or
+`{"action": "replace_output", "output": str}`.
+"""
+
+_DESC_REGISTER_BEFORE_TOOL_HOOK = """\
+Register a hook that runs before every future tool call.
+
+Use to enforce durable tool-call policy: block risky commands, prevent writes
+outside the repo, force timeouts, or normalize arguments. The Monty code receives
+`tool_name: str` and `args: dict`, and must return `{"action": "allow"}`,
+`{"action": "deny", "reason": str}`, or `{"action": "modify", "args": dict}`.
+"""
+
+_DESC_REGISTER_AFTER_TOOL_HOOK = """\
+Register a hook that runs after every future tool call.
+
+Use to enforce durable result policy: redact secrets, truncate noisy output,
+rewrite confusing failures, or ask the model to retry a bad call. The Monty code
+receives `tool_name: str`, `args: dict`, and `result`, and must return
+`{"action": "allow"}`, `{"action": "modify", "result": Any}`, or
+`{"action": "retry", "reason": str}`.
+"""
+
+_DESC_REGISTER_COMPACTION = """\
+Register the single history-compaction hook for future model requests.
+
+Use when conversation history needs a durable retention policy. The Monty code
+receives `messages: list[dict]` and must return a list of message indices to
+keep. pa repairs unsafe output, but a bad compaction can still make future runs
+less useful, so call `check_registrations()` after registering.
+"""
+
+_DESC_REGISTER_TOOL_FILTER = """\
+Register a hook that filters primitive tools before CodeMode exposes run_code.
+
+Use to apply durable capability policy, such as read-only mode or hiding network
+access. The Monty code receives `tool_names: list[str]` and must return the
+subset to keep. Tool filters can hide capabilities from future runs, so prefer
+clear names and call `check_registrations()` after registering.
+"""
+
+_DESC_REGISTER_TOOL = """\
+Register a reusable native tool backed by a Monty snippet.
+
+Use only after proving a repeatable operation in `run_code`. The code receives
+`args: dict` and returns any JSON-serializable value. Provide a JSON object
+schema and `example_args` whenever possible; without `example_args`, the tool is
+saved as a draft and is not callable until `validate_tool` succeeds.
+"""
+
+_DESC_VALIDATE_TOOL = """\
+Validate a draft registered tool with concrete example arguments.
+
+Use after `register_tool` saved a draft, or after repairing a disabled tool. The
+example args must satisfy the tool schema. On success, the tool becomes active
+and will be exposed as a native tool on the next agent run.
+"""
+
+_DESC_DISABLE_REGISTRATION = """\
+Disable any registration without deleting its source.
+
+Use to quarantine broken, risky, or no-longer-wanted self-evolution behavior
+while keeping the code available for inspection or repair. Disabled
+registrations stay in `pa/registrations.yaml` but do not run.
+"""
+
+_DESC_LIST_REGISTRATIONS = """\
+List all registrations as JSON.
+
+Use to inspect what the agent has learned, including slot, status, health,
+description, preview, last error, and last run timing. This does not execute
+registrations; use `check_registrations` when you need a smoke test.
+"""
+
+_DESC_CHECK_REGISTRATIONS = """\
+Smoke-check registrations and return a JSON health report.
+
+Use after adding or changing registrations, or when behavior looks surprising.
+This executes registrations with safe sample inputs where possible, records
+health fields, and reports which registrations are ok, skipped, or failing.
+"""
+
+_DESC_REMOVE_REGISTRATION = """\
+Delete a registration from the manifest.
+
+Use when a registration should be permanently removed rather than quarantined.
+Prefer `disable_registration` first when you may want to inspect, repair, or
+reuse the code later.
+"""
+
 
 def _load(path: Path | str = MANIFEST_PATH_DEFAULT) -> Manifest:
     return Manifest.load(path)
@@ -150,6 +263,26 @@ def register_guard(name: str, code: str) -> str:
     """Register a Monty guard. Receives `tool_name: str`, `args: dict`. Returns
     {'action': 'allow' | 'deny' | 'modify', ...}. First deny wins."""
     return _register("guard", name, code)
+
+
+def register_before_tool_hook(name: str, code: str) -> str:
+    """Register a before-tool hook that can allow, deny, or modify tool args."""
+    return _register("before_tool_hook", name, code)
+
+
+def register_after_tool_hook(name: str, code: str) -> str:
+    """Register an after-tool hook that can allow, retry, or modify tool results."""
+    return _register("after_tool_hook", name, code)
+
+
+def register_before_run_hook(name: str, code: str) -> str:
+    """Register a start-of-run hook returning run-local guidance text."""
+    return _register("before_run_hook", name, code)
+
+
+def register_after_run_hook(name: str, code: str) -> str:
+    """Register an end-of-run hook that can allow or replace final output."""
+    return _register("after_run_hook", name, code)
 
 
 def register_tool_filter(name: str, code: str) -> str:
@@ -272,6 +405,11 @@ def disable_tool(name: str, reason: str = "") -> str:
     return _disable_tool(name, reason, path=MANIFEST_PATH_DEFAULT)
 
 
+def disable_registration(name: str, reason: str = "") -> str:
+    """Disable any registration without deleting its source."""
+    return _disable_registration(name, reason, path=MANIFEST_PATH_DEFAULT)
+
+
 def _disable_tool(name: str, reason: str = "", *, path: Path | str) -> str:
     m = _load(path)
     reg = m.find(name)
@@ -279,10 +417,23 @@ def _disable_tool(name: str, reason: str = "", *, path: Path | str) -> str:
         return f"ERROR: no registration named {name!r}"
     if reg.slot != "tool":
         return f"ERROR: registration {name!r} is a {reg.slot}, not a tool"
+    _disable_loaded_registration(m, reg, reason, path=path)
+    return f"OK: disabled tool/{name}."
+
+
+def _disable_registration(name: str, reason: str = "", *, path: Path | str) -> str:
+    m = _load(path)
+    reg = m.find(name)
+    if reg is None:
+        return f"ERROR: no registration named {name!r}"
+    _disable_loaded_registration(m, reg, reason, path=path)
+    return f"OK: disabled {reg.slot}/{name}."
+
+
+def _disable_loaded_registration(m: Manifest, reg: Registration, reason: str, *, path: Path | str) -> None:
     reg.status = "disabled"
     reg.last_error = reason
     _save(m, path)
-    return f"OK: disabled tool/{name}."
 
 
 def list_registrations() -> str:
@@ -378,6 +529,14 @@ def _smoke_inputs(reg: Registration) -> dict[str, Any] | None:
         }
     if reg.slot == "guard":
         return {"tool_name": "read_file", "args": {"path": "README.md"}}
+    if reg.slot == "before_tool_hook":
+        return {"tool_name": "read_file", "args": {"path": "README.md"}}
+    if reg.slot == "after_tool_hook":
+        return {"tool_name": "read_file", "args": {"path": "README.md"}, "result": "README contents"}
+    if reg.slot == "before_run_hook":
+        return {"ctx_summary": {"agent_name": "pa-doctor", "run_step": 0}}
+    if reg.slot == "after_run_hook":
+        return {"ctx_summary": {"agent_name": "pa-doctor", "run_step": 0}, "output": "health check"}
     if reg.slot == "tool_filter":
         return {"tool_names": ["read_file", "write_file", "bash", "http_get", "complete"]}
     if reg.slot == "tool":
@@ -404,25 +563,30 @@ def _remove_registration(name: str, *, path: Path | str) -> str:
     return f"OK: removed {removed.slot}/{removed.name}."
 
 
-def make_registration_toolset(manifest_path: str | Path) -> FunctionToolset[Any]:
+def make_registration_toolset(manifest_path: str | Path, *, include_advanced: bool = True) -> FunctionToolset[Any]:
     """Create native registration-management tools bound to a manifest path."""
     toolset: FunctionToolset[Any] = FunctionToolset(id="pa-registration-management")
     path = Path(manifest_path)
 
     def register_instruction_bound(name: str, code: str) -> str:
-        """Register a Monty snippet returning a string to append to the system prompt."""
         return _register("instruction", name, code, path=path)
 
     def register_compaction_bound(name: str, code: str) -> str:
-        """Register the single Monty snippet that compacts history."""
         return _register("compaction", name, code, path=path)
 
-    def register_guard_bound(name: str, code: str) -> str:
-        """Register a Monty guard that can allow, deny, or modify tool calls."""
-        return _register("guard", name, code, path=path)
+    def register_before_tool_hook_bound(name: str, code: str) -> str:
+        return _register("before_tool_hook", name, code, path=path)
+
+    def register_after_tool_hook_bound(name: str, code: str) -> str:
+        return _register("after_tool_hook", name, code, path=path)
+
+    def register_before_run_hook_bound(name: str, code: str) -> str:
+        return _register("before_run_hook", name, code, path=path)
+
+    def register_after_run_hook_bound(name: str, code: str) -> str:
+        return _register("after_run_hook", name, code, path=path)
 
     def register_tool_filter_bound(name: str, code: str) -> str:
-        """Register a Monty snippet that filters available primitive tools."""
         return _register("tool_filter", name, code, path=path)
 
     async def register_tool_bound(
@@ -432,49 +596,45 @@ def make_registration_toolset(manifest_path: str | Path) -> FunctionToolset[Any]
         parameters_json_schema: dict[str, Any] | None = None,
         example_args: dict[str, Any] | None = None,
     ) -> str:
-        """Register a draft reusable tool; provide example_args to activate it immediately."""
         return await _register_tool(name, description, code, parameters_json_schema, example_args, path=path)
 
     async def validate_tool_bound(name: str, example_args: dict[str, Any]) -> str:
-        """Validate a registered tool with example args and activate it on success."""
         return await _validate_tool(name, example_args, path=path)
 
-    def disable_tool_bound(name: str, reason: str = "") -> str:
-        """Disable a registered tool without deleting its source."""
-        return _disable_tool(name, reason, path=path)
+    def disable_registration_bound(name: str, reason: str = "") -> str:
+        return _disable_registration(name, reason, path=path)
 
     def list_registrations_bound() -> str:
-        """Return a JSON-encoded list of registration entries."""
         return _list_registrations(path=path)
 
     async def check_registrations_bound() -> str:
-        """Smoke-check active registrations and return a JSON health report."""
         return await _check_registrations(path=path)
 
     def remove_registration_bound(name: str) -> str:
-        """Remove the registration with the given name."""
         return _remove_registration(name, path=path)
 
-    toolset.tool_plain(name="register_instruction", description=register_instruction_bound.__doc__)(
-        register_instruction_bound
+    toolset.tool_plain(name="register_instruction", description=_DESC_REGISTER_INSTRUCTION)(register_instruction_bound)
+    toolset.tool_plain(name="register_before_tool_hook", description=_DESC_REGISTER_BEFORE_TOOL_HOOK)(
+        register_before_tool_hook_bound
     )
-    toolset.tool_plain(name="register_compaction", description=register_compaction_bound.__doc__)(
-        register_compaction_bound
+    toolset.tool_plain(name="register_after_tool_hook", description=_DESC_REGISTER_AFTER_TOOL_HOOK)(
+        register_after_tool_hook_bound
     )
-    toolset.tool_plain(name="register_guard", description=register_guard_bound.__doc__)(register_guard_bound)
-    toolset.tool_plain(name="register_tool_filter", description=register_tool_filter_bound.__doc__)(
-        register_tool_filter_bound
+    toolset.tool_plain(name="register_before_run_hook", description=_DESC_REGISTER_BEFORE_RUN_HOOK)(
+        register_before_run_hook_bound
     )
-    toolset.tool_plain(name="register_tool", description=register_tool_bound.__doc__)(register_tool_bound)
-    toolset.tool_plain(name="validate_tool", description=validate_tool_bound.__doc__)(validate_tool_bound)
-    toolset.tool_plain(name="disable_tool", description=disable_tool_bound.__doc__)(disable_tool_bound)
-    toolset.tool_plain(name="list_registrations", description=list_registrations_bound.__doc__)(
-        list_registrations_bound
+    toolset.tool_plain(name="register_after_run_hook", description=_DESC_REGISTER_AFTER_RUN_HOOK)(
+        register_after_run_hook_bound
     )
-    toolset.tool_plain(name="check_registrations", description=check_registrations_bound.__doc__)(
-        check_registrations_bound
-    )
-    toolset.tool_plain(name="remove_registration", description=remove_registration_bound.__doc__)(
-        remove_registration_bound
-    )
+    toolset.tool_plain(name="register_tool", description=_DESC_REGISTER_TOOL)(register_tool_bound)
+    toolset.tool_plain(name="validate_tool", description=_DESC_VALIDATE_TOOL)(validate_tool_bound)
+    toolset.tool_plain(name="disable_registration", description=_DESC_DISABLE_REGISTRATION)(disable_registration_bound)
+    toolset.tool_plain(name="list_registrations", description=_DESC_LIST_REGISTRATIONS)(list_registrations_bound)
+    toolset.tool_plain(name="check_registrations", description=_DESC_CHECK_REGISTRATIONS)(check_registrations_bound)
+    toolset.tool_plain(name="remove_registration", description=_DESC_REMOVE_REGISTRATION)(remove_registration_bound)
+    if include_advanced:
+        toolset.tool_plain(name="register_compaction", description=_DESC_REGISTER_COMPACTION)(register_compaction_bound)
+        toolset.tool_plain(name="register_tool_filter", description=_DESC_REGISTER_TOOL_FILTER)(
+            register_tool_filter_bound
+        )
     return toolset

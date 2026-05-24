@@ -15,6 +15,7 @@ import yaml
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel, AgentInfo
 
+from pa.manifest import Manifest
 from pa.runtime import build_agent
 
 
@@ -27,6 +28,22 @@ def agent_dir(tmp_path, monkeypatch):
     (tmp_path / "pa").mkdir()
     (tmp_path / "pa" / "registrations.yaml").write_text("registrations: []\n")
     return tmp_path
+
+
+def enable_advanced_registration_tools(agent_dir: Path) -> None:
+    agent_yaml = yaml.safe_load((agent_dir / "agent.yaml").read_text())
+    for cap in agent_yaml["capabilities"]:
+        if "PaRegistrations" in cap:
+            cap["PaRegistrations"] = {"expose_advanced_registration_tools": True}
+    (agent_dir / "agent.yaml").write_text(yaml.safe_dump(agent_yaml))
+
+
+def hide_advanced_registration_tools(agent_dir: Path) -> None:
+    agent_yaml = yaml.safe_load((agent_dir / "agent.yaml").read_text())
+    for cap in agent_yaml["capabilities"]:
+        if "PaRegistrations" in cap:
+            cap["PaRegistrations"] = {"expose_advanced_registration_tools": False}
+    (agent_dir / "agent.yaml").write_text(yaml.safe_dump(agent_yaml))
 
 
 class TestBuildAgent:
@@ -52,9 +69,38 @@ class TestBuildAgent:
         assert "run_code" in seen_tools
         assert "register_tool" in seen_tools
         assert "register_instruction" in seen_tools
+        assert "register_before_tool_hook" in seen_tools
+        assert "register_after_tool_hook" in seen_tools
+        assert "register_before_run_hook" in seen_tools
+        assert "register_after_run_hook" in seen_tools
+        assert "register_compaction" in seen_tools
+        assert "register_tool_filter" in seen_tools
+        assert "validate_tool" in seen_tools
         assert "list_registrations" in seen_tools
         assert "check_registrations" in seen_tools
+        assert "disable_registration" in seen_tools
         assert "remove_registration" in seen_tools
+        assert "disable_tool" not in seen_tools
+        assert "register_guard" not in seen_tools
+
+    def test_advanced_registration_tools_can_be_hidden(self, agent_dir):
+        """Hosts can still hide high-risk policy surfaces explicitly."""
+        hide_advanced_registration_tools(agent_dir)
+        seen_tools = []
+
+        def capture_tools(messages, info: AgentInfo):
+            seen_tools.extend(t.name for t in info.function_tools)
+            return ModelResponse(parts=[TextPart(content="hi")])
+
+        build_agent(model=FunctionModel(capture_tools)).run_sync("test")
+
+        assert "register_before_tool_hook" in seen_tools
+        assert "register_after_tool_hook" in seen_tools
+        assert "register_before_run_hook" in seen_tools
+        assert "register_after_run_hook" in seen_tools
+        assert "register_compaction" not in seen_tools
+        assert "register_tool_filter" not in seen_tools
+        assert "disable_tool" not in seen_tools
 
     def test_run_code_description_lists_all_tools(self, agent_dir):
         """The run_code tool description includes the 5 sandboxed primitives."""
@@ -127,6 +173,32 @@ class TestBuildAgent:
         assert reg["last_error"]
         assert reg["last_run_status"] == "error"
 
+    def test_disabled_tool_filter_is_not_applied(self, agent_dir):
+        """Disabled tool_filter registrations are ignored by native prepare_tools."""
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "tool_filter",
+                "name": "disabled_read_only",
+                "code": '["read_file"]',
+                "status": "disabled",
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        description = ""
+
+        def capture_desc(messages, info: AgentInfo):
+            nonlocal description
+            for t in info.function_tools:
+                if t.name == "run_code":
+                    description = t.description
+            return ModelResponse(parts=[TextPart(content="hi")])
+
+        build_agent(model=FunctionModel(capture_desc)).run_sync("test")
+
+        assert "read_file" in description
+        assert "bash" in description
+
     def test_guard_failures_are_recorded_without_crashing_agent(self, agent_dir):
         """Broken guards retry the tool call and persist health."""
         manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
@@ -154,6 +226,35 @@ class TestBuildAgent:
         reg = manifest["registrations"][0]
         assert reg["last_error"]
         assert reg["last_run_status"] == "error"
+
+    def test_disabled_guard_does_not_execute(self, agent_dir):
+        """Disabled guards do not participate in before_tool_execute."""
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "guard",
+                "name": "disabled_guard",
+                "code": "missing_name",
+                "status": "disabled",
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        call_count = 0
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(parts=[ToolCallPart(tool_name="list_registrations", args={}, tool_call_id="tc1")])
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("trigger disabled guard")
+
+        assert result.output == "done"
+        reg = Manifest.load(agent_dir / "pa" / "registrations.yaml").find("disabled_guard")
+        assert reg is not None
+        assert reg.last_run_status == "unknown"
+        assert reg.last_error == ""
 
 
 class TestSelfImprovementLoop:
@@ -224,8 +325,102 @@ class TestSelfImprovementLoop:
             f"Expected 'Cheerio' in dynamic instructions, got: {dynamic_contents}"
         )
 
-    def test_register_guard_via_run_code(self, agent_dir):
-        """Model calls register_guard as a native tool; manifest persists it."""
+    def test_disabled_instruction_is_not_injected(self, agent_dir):
+        """Disabled instruction registrations are ignored by get_instructions."""
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "instruction",
+                "name": "disabled_note",
+                "code": '"Never include this."',
+                "status": "disabled",
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        instruction_parts = []
+
+        def check_model(messages, info: AgentInfo):
+            instruction_parts.extend(info.model_request_parameters.instruction_parts or [])
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        build_agent(model=FunctionModel(check_model)).run_sync("test")
+
+        dynamic_contents = [p.content for p in instruction_parts if getattr(p, "dynamic", False)]
+        assert all("Never include this" not in c for c in dynamic_contents)
+
+    def test_before_run_hook_injects_run_local_guidance(self, agent_dir):
+        """before_run_hook return text is exposed as dynamic run-local guidance."""
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "before_run_hook",
+                "name": "start_note",
+                "code": '"Use the project checklist before answering."',
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        instruction_parts = []
+
+        def check_model(messages, info: AgentInfo):
+            instruction_parts.extend(info.model_request_parameters.instruction_parts or [])
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        build_agent(model=FunctionModel(check_model)).run_sync("test")
+
+        dynamic_contents = [p.content for p in instruction_parts if getattr(p, "dynamic", False)]
+        assert any("Use the project checklist" in c for c in dynamic_contents)
+
+    def test_after_run_hook_can_replace_output(self, agent_dir):
+        """after_run_hook can modify final output through the native after_run hook."""
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "after_run_hook",
+                "name": "signoff",
+                "code": '{"action": "replace_output", "output": output + " signed"}',
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+
+        def model(messages, info: AgentInfo):
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(model)).run_sync("test")
+
+        assert result.output == "done signed"
+
+    def test_after_tool_hook_can_modify_result(self, agent_dir):
+        """after_tool_hook can transform native tool results."""
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "after_tool_hook",
+                "name": "rewrite_registration_listing",
+                "code": '{"action": "modify", "result": "hooked result"} if tool_name == "list_registrations" else {"action": "allow"}',
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        call_count = 0
+        observed_return = ""
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, observed_return
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(parts=[ToolCallPart(tool_name="list_registrations", args={}, tool_call_id="tc1")])
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "list_registrations" and hasattr(part, "content"):
+                        observed_return = str(part.content)
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("test")
+
+        assert result.output == "done"
+        assert observed_return == "hooked result"
+
+    def test_register_before_tool_hook_via_run_code(self, agent_dir):
+        """Model calls register_before_tool_hook as a native tool; manifest persists it."""
         call_count = 0
 
         def scripted(messages, info: AgentInfo):
@@ -236,7 +431,7 @@ class TestSelfImprovementLoop:
                 return ModelResponse(
                     parts=[
                         ToolCallPart(
-                            tool_name="register_guard",
+                            tool_name="register_before_tool_hook",
                             args={"name": "no_bash", "code": guard_code},
                             tool_call_id="tc1",
                         )
@@ -245,11 +440,11 @@ class TestSelfImprovementLoop:
             return ModelResponse(parts=[TextPart(content="done")])
 
         agent = build_agent(model=FunctionModel(scripted))
-        agent.run_sync("register guard")
+        agent.run_sync("register before-tool hook")
 
         manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
         assert len(manifest["registrations"]) == 1
-        assert manifest["registrations"][0]["slot"] == "guard"
+        assert manifest["registrations"][0]["slot"] == "before_tool_hook"
 
     def test_register_compaction_via_run_code(self, agent_dir):
         """Model calls register_compaction as a native tool."""

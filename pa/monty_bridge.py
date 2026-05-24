@@ -153,11 +153,27 @@ def _validate_return_shape(slot: SlotName, value: Any) -> Any:
         if not isinstance(value, list) or not all(isinstance(i, int) for i in value):
             raise MontyReturnShapeError("compaction must return list[int]")
         return value
-    if slot == "guard":
+    if slot in ("guard", "before_tool_hook"):
         if not isinstance(value, dict) or "action" not in value:
-            raise MontyReturnShapeError("guard must return dict with 'action' key")
+            raise MontyReturnShapeError(f"{slot} must return dict with 'action' key")
         if value["action"] not in ("allow", "deny", "modify"):
-            raise MontyReturnShapeError(f"guard action must be allow|deny|modify, got {value['action']!r}")
+            raise MontyReturnShapeError(f"{slot} action must be allow|deny|modify, got {value['action']!r}")
+        return value
+    if slot == "after_tool_hook":
+        if not isinstance(value, dict) or "action" not in value:
+            raise MontyReturnShapeError("after_tool_hook must return dict with 'action' key")
+        if value["action"] not in ("allow", "modify", "retry"):
+            raise MontyReturnShapeError(f"after_tool_hook action must be allow|modify|retry, got {value['action']!r}")
+        return value
+    if slot == "before_run_hook":
+        if not isinstance(value, str):
+            raise MontyReturnShapeError(f"before_run_hook must return str, got {type(value).__name__}")
+        return value
+    if slot == "after_run_hook":
+        if not isinstance(value, dict) or "action" not in value:
+            raise MontyReturnShapeError("after_run_hook must return dict with 'action' key")
+        if value["action"] not in ("allow", "replace_output"):
+            raise MontyReturnShapeError(f"after_run_hook action must be allow|replace_output, got {value['action']!r}")
         return value
     if slot == "tool_filter":
         if not isinstance(value, list) or not all(isinstance(s, str) for s in value):

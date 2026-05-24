@@ -67,3 +67,23 @@ async def test_compaction_cannot_drop_current_request(tmp_cwd):
     assert reg is not None
     assert "current request" in reg.last_error
     assert reg.last_run_status == "error"
+
+
+@pytest.mark.asyncio
+async def test_disabled_compaction_does_not_run(tmp_cwd):
+    """Disabled compaction registrations do not participate in before_model_request."""
+    m = Manifest()
+    m.add(Registration(slot="compaction", name="broken_compaction", code="missing_name", status="disabled"))
+    m.save()
+
+    agent = Agent(
+        FunctionModel(lambda messages, info: ModelResponse(parts=[TextPart(content="ok")])),
+        capabilities=[PaRegistrations()],
+    )
+    result1 = await agent.run("first")
+    await agent.run("second", message_history=result1.all_messages())
+
+    reg = Manifest.load().find("broken_compaction")
+    assert reg is not None
+    assert reg.last_run_status == "unknown"
+    assert reg.last_error == ""

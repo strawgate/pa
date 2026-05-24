@@ -26,14 +26,25 @@ pa repl          # interactive REPL with history
 to create a persistent tool. Tools without an example are saved as drafts.
 Only validated active tools appear as native tools on the next run.
 
-Other hook slots:
-- `register_instruction` — dynamic system prompt additions
-- `register_compaction` — history compaction (single slot)
-- `register_guard` — pre-execution guard on tool calls (allow/deny/modify)
-- `register_tool_filter` — filter available primitives with native tool preparation
-- `validate_tool` / `disable_tool` — promote or quarantine registered tools
+Agent-facing registration tools:
+- `register_tool` — save a proven repeatable operation as a native tool
+- `validate_tool` — promote a draft tool after a concrete example works
+- `register_instruction` — remember durable preferences, project conventions,
+  or workflow guidance
+- `register_before_run_hook` — run once at the start of each run and inject
+  run-local guidance
+- `register_after_run_hook` — run once at the end of each run and optionally
+  replace final output
+- `register_before_tool_hook` — allow, deny, or modify a tool call before it runs
+- `register_after_tool_hook` — allow, retry, or modify a tool result after it runs
+- `register_compaction` — choose history message indices to keep
+- `register_tool_filter` — filter available primitive tools
 - `list_registrations` / `check_registrations` — inspect registration health
-- `remove_registration` — manage registrations
+- `disable_registration` / `remove_registration` — quarantine or remove bad
+  registrations
+
+`register_guard` and `disable_tool` remain compatibility aliases, but the agent
+prompt and native tool surface prefer lifecycle names.
 
 **`complete()`** allows the agent to call its own model for sub-tasks
 (summarization, code generation, structured extraction).
@@ -43,11 +54,14 @@ All registrations persist in `pa/registrations.yaml`.
 ## Concepts
 
 - **Registration**: a named Monty snippet bound to a slot. Created via
-  `register_tool`, `validate_tool`, `register_instruction`,
-  `register_compaction`, `register_guard`, or `register_tool_filter`.
-- **Slot**: one of `tool`, `instruction`, `compaction`, `guard`, `tool_filter`.
+  agent-facing tools such as `register_tool`, `validate_tool`,
+  `register_instruction`, lifecycle hook registration tools, `register_compaction`,
+  or `register_tool_filter`.
+- **Slot**: one of `tool`, `instruction`, `compaction`, `before_run_hook`,
+  `after_run_hook`, `before_tool_hook`, `after_tool_hook`, legacy `guard`, or `tool_filter`.
   `compaction` is single-cardinality; the rest stack. Tool registrations have
-  `draft`, `active`, or `disabled` status.
+  `draft`, `active`, or `disabled` status. Disabled registrations remain in the
+  manifest but are not wired into Pydantic AI hooks or toolsets.
 - **Primitives**: `read_file`, `write_file`, `bash`, `http_get`, `complete`.
   Sandboxed inside `run_code` via Monty. The `tools` list in `agent.yaml`
   controls which primitives are sandboxed.

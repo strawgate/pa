@@ -20,6 +20,53 @@ from pa.registration_runtime import (
 from pa.registration_tools import validate_args_against_schema
 
 
+def make_before_run_hook(reg: Registration, *, manifest: Manifest | None = None, manifest_path: str = ""):
+    async def _before_run(ctx: RunContext[Any]) -> str:
+        ctx_summary = {
+            "agent_name": getattr(ctx.agent, "name", None) if ctx.agent else None,
+            "run_step": ctx.run_step,
+        }
+        try:
+            res = await run_registration(
+                reg,
+                inputs={"ctx_summary": ctx_summary},
+                manifest=manifest,
+                manifest_path=manifest_path,
+            )
+        except RegistrationExecutionError:
+            return ""
+        return res.value
+
+    _before_run.__name__ = f"pa_before_run_hook_{reg.name}"
+    return _before_run
+
+
+def make_after_run_hook(reg: Registration, *, manifest: Manifest | None = None, manifest_path: str = ""):
+    async def _after_run(ctx: RunContext[Any], output: Any) -> Any:
+        ctx_summary = {
+            "agent_name": getattr(ctx.agent, "name", None) if ctx.agent else None,
+            "run_step": ctx.run_step,
+        }
+        try:
+            res = await run_registration(
+                reg,
+                inputs={"ctx_summary": ctx_summary, "output": output},
+                manifest=manifest,
+                manifest_path=manifest_path,
+            )
+        except RegistrationExecutionError:
+            return output
+        action = res.value["action"]
+        if action == "allow":
+            return output
+        if action == "replace_output":
+            return res.value.get("output", output)
+        return output
+
+    _after_run.__name__ = f"pa_after_run_hook_{reg.name}"
+    return _after_run
+
+
 def make_instruction_fn(
     reg: Registration,
     *,
@@ -77,8 +124,8 @@ def make_compaction_fn(reg: Registration, *, manifest: Manifest | None = None, m
     return _compact
 
 
-def make_guard_hook(reg: Registration, *, manifest: Manifest | None = None, manifest_path: str = ""):
-    async def _guard(
+def make_before_tool_hook(reg: Registration, *, manifest: Manifest | None = None, manifest_path: str = ""):
+    async def _before_tool(
         ctx: RunContext[Any],
         *,
         call: ToolCallPart,
@@ -93,31 +140,66 @@ def make_guard_hook(reg: Registration, *, manifest: Manifest | None = None, mani
                 manifest_path=manifest_path,
             )
         except RegistrationExecutionError as e:
-            raise ModelRetry(f"guard {reg.name!r} crashed: {e}") from e
+            raise ModelRetry(f"before_tool_hook {reg.name!r} crashed: {e}") from e
         action = res.value["action"]
         if action == "allow":
             return args
         if action == "deny":
-            reason = res.value.get("reason", "denied by guard")
-            raise ModelRetry(f"guard {reg.name!r} denied {call.tool_name!r}: {reason}")
+            reason = res.value.get("reason", "denied by before-tool hook")
+            raise ModelRetry(f"before_tool_hook {reg.name!r} denied {call.tool_name!r}: {reason}")
         if action == "modify":
             new_args = res.value.get("args", args)
             if not isinstance(new_args, dict):
-                raise ModelRetry(f"guard {reg.name!r} produced non-dict args")
+                raise ModelRetry(f"before_tool_hook {reg.name!r} produced non-dict args")
             return new_args
-        raise ModelRetry(f"guard {reg.name!r}: unknown action {action!r}")
+        raise ModelRetry(f"before_tool_hook {reg.name!r}: unknown action {action!r}")
 
-    _guard.__name__ = f"pa_guard_{reg.name}"
-    return _guard
+    _before_tool.__name__ = f"pa_before_tool_hook_{reg.name}"
+    return _before_tool
+
+
+def make_guard_hook(reg: Registration, *, manifest: Manifest | None = None, manifest_path: str = ""):
+    """Compatibility wrapper for legacy guard registrations."""
+    return make_before_tool_hook(reg, manifest=manifest, manifest_path=manifest_path)
+
+
+def make_after_tool_hook(reg: Registration, *, manifest: Manifest | None = None, manifest_path: str = ""):
+    async def _after_tool(
+        ctx: RunContext[Any],
+        *,
+        call: ToolCallPart,
+        tool_def: ToolDefinition,
+        args: dict[str, Any],
+        result: Any,
+    ) -> Any:
+        try:
+            res = await run_registration(
+                reg,
+                inputs={"tool_name": call.tool_name, "args": args, "result": result},
+                manifest=manifest,
+                manifest_path=manifest_path,
+            )
+        except RegistrationExecutionError as e:
+            raise ModelRetry(f"after_tool_hook {reg.name!r} crashed: {e}") from e
+        action = res.value["action"]
+        if action == "allow":
+            return result
+        if action == "modify":
+            return res.value.get("result", result)
+        if action == "retry":
+            reason = res.value.get("reason", "rejected by after-tool hook")
+            raise ModelRetry(f"after_tool_hook {reg.name!r} rejected {call.tool_name!r}: {reason}")
+        raise ModelRetry(f"after_tool_hook {reg.name!r}: unknown action {action!r}")
+
+    _after_tool.__name__ = f"pa_after_tool_hook_{reg.name}"
+    return _after_tool
 
 
 def make_registered_toolset(manifest: Manifest, *, manifest_path: str = "") -> FunctionToolset[Any]:
     """Create native Pydantic AI tools for active tool registrations."""
     toolset: FunctionToolset[Any] = FunctionToolset(id="pa-registered-tools", max_retries=2)
 
-    for reg in manifest.by_slot("tool"):
-        if reg.status != "active":
-            continue
+    for reg in manifest.active_by_slot("tool"):
         toolset.add_tool(_make_registered_tool(reg, manifest=manifest, manifest_path=manifest_path))
 
     return toolset
