@@ -51,6 +51,11 @@ prompt and native tool surface prefer lifecycle names.
 
 All registrations persist in `pa/registrations.yaml`.
 
+For detailed registration patterns and gotchas, see
+[`docs/registrations.md`](docs/registrations.md). `pa init` also writes this
+guide into new projects so the agent can read it with
+`read_file(path="docs/registrations.md")`.
+
 **Retry budgets:** Pydantic AI raises `UnexpectedModelBehavior` and aborts the
 current agent run when a tool exhausts its retry budget. pa configures
 `run_code`, registration-management tools, and active registered tools with a

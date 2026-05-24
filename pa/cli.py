@@ -55,25 +55,31 @@ app = typer.Typer(add_completion=False, no_args_is_help=True, help="pa — self-
 console = Console()
 
 _TEMPLATE = Path(__file__).parent / "agent_template.yaml"
+_GUIDE_TEMPLATE = Path(__file__).parent.parent / "docs" / "registrations.md"
 
 
 def _ensure_config() -> None:
-    """Create agent.yaml + pa/registrations.yaml in cwd if they don't exist."""
+    """Create agent.yaml, pa/registrations.yaml, and docs in cwd if needed."""
     target = Path("agent.yaml")
-    if target.exists():
-        return
-    shutil.copyfile(_TEMPLATE, target)
-    console.print(f"[green]wrote {target}[/green]")
+    if not target.exists():
+        shutil.copyfile(_TEMPLATE, target)
+        console.print(f"[green]wrote {target}[/green]")
     reg_dir = Path("pa")
     reg_dir.mkdir(exist_ok=True)
     reg_path = reg_dir / "registrations.yaml"
-    reg_path.write_text("registrations: []\n")
-    console.print(f"[green]wrote {reg_path}[/green]")
+    if not reg_path.exists():
+        reg_path.write_text("registrations: []\n")
+        console.print(f"[green]wrote {reg_path}[/green]")
+    guide_path = Path("docs") / "registrations.md"
+    if _GUIDE_TEMPLATE.exists() and not guide_path.exists():
+        guide_path.parent.mkdir(exist_ok=True)
+        shutil.copyfile(_GUIDE_TEMPLATE, guide_path)
+        console.print(f"[green]wrote {guide_path}[/green]")
 
 
 @app.command()
 def init() -> None:
-    """Create agent.yaml and pa/registrations.yaml in the current directory."""
+    """Create agent.yaml, pa/registrations.yaml, and docs in the current directory."""
     _ensure_config()
 
 
