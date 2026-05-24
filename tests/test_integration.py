@@ -16,7 +16,7 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel, AgentInfo
 
 from pa.manifest import Manifest
-from pa.registration_tools import SELF_EVOLUTION_TOOL_MAX_RETRIES
+from pa.registration_tools import SELF_EVOLUTION_TOOL_MAX_RETRIES, check_registrations
 from pa.runtime import build_agent
 
 
@@ -104,7 +104,7 @@ class TestBuildAgent:
         assert "disable_tool" not in seen_tools
 
     def test_run_code_description_lists_all_tools(self, agent_dir):
-        """The run_code tool description includes the 5 sandboxed primitives."""
+        """The run_code tool description includes the configured sandboxed primitives."""
         description = ""
 
         def capture_desc(messages, info: AgentInfo):
@@ -120,10 +120,40 @@ class TestBuildAgent:
         for tool_name in [
             "read_file",
             "write_file",
+            "list_dir",
             "bash",
             "http_get",
         ]:
             assert tool_name in description, f"{tool_name} not found in run_code description"
+
+    def test_run_code_can_list_directories(self, agent_dir):
+        """CodeMode exposes list_dir as a sandbox primitive."""
+        call_count = 0
+        observed_return = []
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, observed_return
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="run_code",
+                            args={"code": 'entries = await list_dir(path=".")\n[e["name"] for e in entries]'},
+                            tool_call_id="tc1",
+                        )
+                    ]
+                )
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "run_code" and hasattr(part, "content"):
+                        observed_return = part.content
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("list files")
+
+        assert result.output == "done"
+        assert "agent.yaml" in observed_return
 
     def test_tool_filter_uses_native_prepare_tools(self, agent_dir):
         """tool_filter registrations filter primitives before CodeMode builds run_code."""
@@ -149,6 +179,7 @@ class TestBuildAgent:
         agent.run_sync("test")
 
         assert "read_file" in description
+        assert "list_dir" not in description
         assert "bash" not in description
 
     def test_tool_filter_failures_are_recorded(self, agent_dir):
@@ -807,6 +838,70 @@ class TestSelfImprovementLoop:
         assert result.output == "done"
         assert tool_schema["properties"]["x"]["type"] == "integer"
         assert observed_return == "6"
+
+    def test_registered_tool_can_use_filesystem_primitives(self, agent_dir):
+        """Registered Monty tools can call list_dir and read_file directly."""
+        (agent_dir / "notes.txt").write_text("alpha\nneedle\n", encoding="utf-8")
+        (agent_dir / ".env").write_text("needle=secret\n", encoding="utf-8")
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "tool",
+                "name": "one_level_grep",
+                "description": "Search text files in one directory level, skipping .env.",
+                "code": (
+                    'pattern = args["pattern"]\n'
+                    "matches = []\n"
+                    'for entry in await list_dir(path=args.get("path", ".")):\n'
+                    '    if entry["is_file"] and entry["name"] != ".env":\n'
+                    '        text = await read_file(path=entry["path"])\n'
+                    "        lines = text.splitlines()\n"
+                    "        for line_no, line in enumerate(lines, 1):\n"
+                    "            if pattern in line:\n"
+                    "                matches.append(f\"{entry['name']}:{line_no}:{line}\")\n"
+                    "matches"
+                ),
+                "parameters_json_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}, "pattern": {"type": "string"}},
+                    "required": ["pattern"],
+                    "additionalProperties": False,
+                },
+                "status": "active",
+                "validated_example_args": {"path": ".", "pattern": "needle"},
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        call_count = 0
+        observed_return = ""
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, observed_return
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="one_level_grep",
+                            args={"path": ".", "pattern": "needle"},
+                            tool_call_id="tc1",
+                        )
+                    ]
+                )
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "one_level_grep" and hasattr(part, "content"):
+                        observed_return = str(part.content)
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("search files")
+
+        assert result.output == "done"
+        assert "notes.txt:2:needle" in observed_return
+        assert ".env" not in observed_return
+        health = check_registrations()
+        assert '"name": "one_level_grep"' in health
+        assert '"check": "ok"' in health
 
     def test_registered_tools_allow_multiple_arg_repairs(self, agent_dir):
         """Active registered tools share the self-evolution retry budget."""

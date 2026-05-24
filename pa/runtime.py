@@ -115,6 +115,7 @@ def _make_direct_provider(sdk: str, base_url: str):
 _PRIMITIVES: dict[str, Callable[..., Any]] = {
     "read_file": primitives.read_file,
     "write_file": primitives.write_file,
+    "list_dir": primitives.list_dir,
     "bash": primitives.bash,
     "http_get": primitives.http_get,
     "complete": primitives.complete,

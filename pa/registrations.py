@@ -17,7 +17,12 @@ from pa.registration_runtime import (
     record_registration_result,
     run_registration,
 )
-from pa.registration_tools import SELF_EVOLUTION_TOOL_MAX_RETRIES, validate_args_against_schema
+from pa.registration_tools import (
+    REGISTERED_TOOL_EXTRA_STUBS,
+    REGISTERED_TOOL_EXTERNAL_FUNCTIONS,
+    SELF_EVOLUTION_TOOL_MAX_RETRIES,
+    validate_args_against_schema,
+)
 
 
 def make_before_run_hook(reg: Registration, *, manifest: Manifest | None = None, manifest_path: str = ""):
@@ -216,6 +221,8 @@ def _make_registered_tool(reg: Registration, *, manifest: Manifest, manifest_pat
                 inputs={"args": kwargs},
                 manifest=manifest,
                 manifest_path=manifest_path,
+                external_functions=REGISTERED_TOOL_EXTERNAL_FUNCTIONS,
+                extra_stubs=REGISTERED_TOOL_EXTRA_STUBS,
             )
         except RegistrationExecutionError as e:
             raise ModelRetry(f"registered tool {reg.name!r} failed: {e}") from e
