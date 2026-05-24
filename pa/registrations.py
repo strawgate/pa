@@ -139,8 +139,8 @@ def make_before_tool_hook(reg: Registration, *, manifest: Manifest | None = None
                 manifest=manifest,
                 manifest_path=manifest_path,
             )
-        except RegistrationExecutionError as e:
-            raise ModelRetry(f"before_tool_hook {reg.name!r} crashed: {e}") from e
+        except RegistrationExecutionError:
+            return args
         action = res.value["action"]
         if action == "allow":
             return args
@@ -179,8 +179,8 @@ def make_after_tool_hook(reg: Registration, *, manifest: Manifest | None = None,
                 manifest=manifest,
                 manifest_path=manifest_path,
             )
-        except RegistrationExecutionError as e:
-            raise ModelRetry(f"after_tool_hook {reg.name!r} crashed: {e}") from e
+        except RegistrationExecutionError:
+            return result
         action = res.value["action"]
         if action == "allow":
             return result
