@@ -152,6 +152,26 @@ def register_guard(name: str, code: str) -> str:
     return _register("guard", name, code)
 
 
+def register_before_tool_hook(name: str, code: str) -> str:
+    """Register a before-tool hook that can allow, deny, or modify tool args."""
+    return _register("before_tool_hook", name, code)
+
+
+def register_after_tool_hook(name: str, code: str) -> str:
+    """Register an after-tool hook that can allow, retry, or modify tool results."""
+    return _register("after_tool_hook", name, code)
+
+
+def register_before_run_hook(name: str, code: str) -> str:
+    """Register a start-of-run hook returning run-local guidance text."""
+    return _register("before_run_hook", name, code)
+
+
+def register_after_run_hook(name: str, code: str) -> str:
+    """Register an end-of-run hook that can allow or replace final output."""
+    return _register("after_run_hook", name, code)
+
+
 def register_tool_filter(name: str, code: str) -> str:
     """Register a Monty tool-filter. Receives `tool_names: list[str]`,
     returns the filtered list."""
@@ -396,6 +416,14 @@ def _smoke_inputs(reg: Registration) -> dict[str, Any] | None:
         }
     if reg.slot == "guard":
         return {"tool_name": "read_file", "args": {"path": "README.md"}}
+    if reg.slot == "before_tool_hook":
+        return {"tool_name": "read_file", "args": {"path": "README.md"}}
+    if reg.slot == "after_tool_hook":
+        return {"tool_name": "read_file", "args": {"path": "README.md"}, "result": "README contents"}
+    if reg.slot == "before_run_hook":
+        return {"ctx_summary": {"agent_name": "pa-doctor", "run_step": 0}}
+    if reg.slot == "after_run_hook":
+        return {"ctx_summary": {"agent_name": "pa-doctor", "run_step": 0}, "output": "health check"}
     if reg.slot == "tool_filter":
         return {"tool_names": ["read_file", "write_file", "bash", "http_get", "complete"]}
     if reg.slot == "tool":
@@ -422,7 +450,7 @@ def _remove_registration(name: str, *, path: Path | str) -> str:
     return f"OK: removed {removed.slot}/{removed.name}."
 
 
-def make_registration_toolset(manifest_path: str | Path, *, include_advanced: bool = False) -> FunctionToolset[Any]:
+def make_registration_toolset(manifest_path: str | Path, *, include_advanced: bool = True) -> FunctionToolset[Any]:
     """Create native registration-management tools bound to a manifest path."""
     toolset: FunctionToolset[Any] = FunctionToolset(id="pa-registration-management")
     path = Path(manifest_path)
@@ -435,9 +463,21 @@ def make_registration_toolset(manifest_path: str | Path, *, include_advanced: bo
         """Register the single Monty snippet that compacts history."""
         return _register("compaction", name, code, path=path)
 
-    def register_guard_bound(name: str, code: str) -> str:
-        """Register a Monty guard that can allow, deny, or modify tool calls."""
-        return _register("guard", name, code, path=path)
+    def register_before_tool_hook_bound(name: str, code: str) -> str:
+        """Register a before-tool hook that can allow, deny, or modify tool args."""
+        return _register("before_tool_hook", name, code, path=path)
+
+    def register_after_tool_hook_bound(name: str, code: str) -> str:
+        """Register an after-tool hook that can allow, retry, or modify tool results."""
+        return _register("after_tool_hook", name, code, path=path)
+
+    def register_before_run_hook_bound(name: str, code: str) -> str:
+        """Register a start-of-run hook returning run-local guidance text."""
+        return _register("before_run_hook", name, code, path=path)
+
+    def register_after_run_hook_bound(name: str, code: str) -> str:
+        """Register an end-of-run hook that can allow or replace final output."""
+        return _register("after_run_hook", name, code, path=path)
 
     def register_tool_filter_bound(name: str, code: str) -> str:
         """Register a Monty snippet that filters available primitive tools."""
@@ -480,7 +520,18 @@ def make_registration_toolset(manifest_path: str | Path, *, include_advanced: bo
     toolset.tool_plain(name="register_instruction", description=register_instruction_bound.__doc__)(
         register_instruction_bound
     )
-    toolset.tool_plain(name="register_guard", description=register_guard_bound.__doc__)(register_guard_bound)
+    toolset.tool_plain(name="register_before_tool_hook", description=register_before_tool_hook_bound.__doc__)(
+        register_before_tool_hook_bound
+    )
+    toolset.tool_plain(name="register_after_tool_hook", description=register_after_tool_hook_bound.__doc__)(
+        register_after_tool_hook_bound
+    )
+    toolset.tool_plain(name="register_before_run_hook", description=register_before_run_hook_bound.__doc__)(
+        register_before_run_hook_bound
+    )
+    toolset.tool_plain(name="register_after_run_hook", description=register_after_run_hook_bound.__doc__)(
+        register_after_run_hook_bound
+    )
     toolset.tool_plain(name="register_tool", description=register_tool_bound.__doc__)(register_tool_bound)
     toolset.tool_plain(name="validate_tool", description=validate_tool_bound.__doc__)(validate_tool_bound)
     toolset.tool_plain(name="disable_registration", description=disable_registration_bound.__doc__)(

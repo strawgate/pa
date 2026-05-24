@@ -67,8 +67,16 @@ instructions: |
   Other hooks:
   - `register_instruction(name, code)` — remember durable user preferences,
     project conventions, or workflow guidance.
-  - `register_guard(name, code)` — enforce durable tool-call policy such as
-    blocking risky commands or normalizing tool arguments.
+  - `register_before_run_hook(name, code)` — run once at the start of each run;
+    return run-local guidance text.
+  - `register_after_run_hook(name, code)` — run once at the end of each run;
+    return `{"action": "allow"}` or `{"action": "replace_output", "output": str}`.
+  - `register_before_tool_hook(name, code)` — run before a tool call; allow,
+    deny, or modify tool arguments.
+  - `register_after_tool_hook(name, code)` — run after a tool call; allow,
+    retry, or modify the tool result.
+  - `register_compaction(name, code)` — choose history message indices to keep.
+  - `register_tool_filter(name, code)` — filter primitive tools dynamically.
   - `list_registrations()` / `check_registrations()` — inspect registration health
   - `disable_registration(name)` / `remove_registration(name)` — manage registrations
 

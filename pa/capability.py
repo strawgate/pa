@@ -21,6 +21,10 @@ from pa.manifest import MANIFEST_PATH_DEFAULT, Manifest
 from pa.registration_runtime import RegistrationExecutionError, run_registration
 from pa.registration_tools import make_registration_toolset
 from pa.registrations import (
+    make_after_run_hook,
+    make_after_tool_hook,
+    make_before_run_hook,
+    make_before_tool_hook,
     make_compaction_fn,
     make_guard_hook,
     make_instruction_fn,
@@ -36,11 +40,12 @@ class PaRegistrations(AbstractCapability[Any]):
     """Loads ./pa/registrations.yaml and wires entries through native Pydantic AI hooks."""
 
     manifest_path: str = str(MANIFEST_PATH_DEFAULT)
-    expose_advanced_registration_tools: bool = False
+    expose_advanced_registration_tools: bool = True
     _manifest: Manifest = field(init=False, repr=False)
     _compaction: Callable[[list[ModelMessage]], Awaitable[list[ModelMessage]]] | None = field(
         default=None, init=False, repr=False
     )
+    _run_notes: list[str] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._manifest = Manifest.load(self.manifest_path)
@@ -57,6 +62,12 @@ class PaRegistrations(AbstractCapability[Any]):
         if len(args) == 2 and not kwargs and isinstance(args[0], tuple) and isinstance(args[1], dict):
             return cls(*args[0], **args[1])
         return cls(*args, **kwargs)
+
+    async def for_run(self, ctx: RunContext[Any]) -> "PaRegistrations":
+        return type(self)(
+            manifest_path=self.manifest_path,
+            expose_advanced_registration_tools=self.expose_advanced_registration_tools,
+        )
 
     def get_toolset(self) -> AbstractToolset[Any] | None:
         toolset = make_registration_toolset(
@@ -75,17 +86,40 @@ class PaRegistrations(AbstractCapability[Any]):
         ]
 
         async def _registration_errors(ctx: RunContext[Any]) -> str | None:
+            sections = []
+            if self._run_notes:
+                sections.append("[pa: run hooks]\n" + "\n".join(self._run_notes))
             errors = [
                 f"{r.slot}/{r.name}: {r.last_error}"
                 for r in self._manifest.registrations
                 if r.status == "active" and r.last_error
             ]
-            if not errors:
+            if errors:
+                sections.append("[pa: registration issues]\n" + "\n".join(errors))
+            if not sections:
                 return None
-            return "[pa: registration issues]\n" + "\n".join(errors)
+            return "\n\n".join(sections)
 
         instructions.append(_registration_errors)
         return instructions
+
+    async def before_run(self, ctx: RunContext[Any]) -> None:
+        """Run self-authored start-of-run hooks and collect run-local guidance."""
+        self._run_notes = []
+        for reg in self._manifest.active_by_slot("before_run_hook"):
+            hook = make_before_run_hook(reg, manifest=self._manifest, manifest_path=self.manifest_path)
+            note = await hook(ctx)
+            if note:
+                self._run_notes.append(f"{reg.name}: {note}")
+
+    async def after_run(self, ctx: RunContext[Any], *, result: Any) -> Any:
+        """Run self-authored end-of-run hooks."""
+        output = result.output
+        for reg in self._manifest.active_by_slot("after_run_hook"):
+            hook = make_after_run_hook(reg, manifest=self._manifest, manifest_path=self.manifest_path)
+            output = await hook(ctx, output)
+        result.output = output
+        return result
 
     async def prepare_tools(
         self,
@@ -123,10 +157,28 @@ class PaRegistrations(AbstractCapability[Any]):
         args: dict[str, Any],
     ) -> dict[str, Any]:
         """Run registered guards through native before-tool hooks."""
+        for reg in self._manifest.active_by_slot("before_tool_hook"):
+            hook = make_before_tool_hook(reg, manifest=self._manifest, manifest_path=self.manifest_path)
+            args = await hook(ctx, call=call, tool_def=tool_def, args=args)
         for reg in self._manifest.active_by_slot("guard"):
             hook = make_guard_hook(reg, manifest=self._manifest, manifest_path=self.manifest_path)
             args = await hook(ctx, call=call, tool_def=tool_def, args=args)
         return args
+
+    async def after_tool_execute(
+        self,
+        ctx: RunContext[Any],
+        *,
+        call: ToolCallPart,
+        tool_def: ToolDefinition,
+        args: dict[str, Any],
+        result: Any,
+    ) -> Any:
+        """Run registered after-tool hooks through native tool-execution hooks."""
+        for reg in self._manifest.active_by_slot("after_tool_hook"):
+            hook = make_after_tool_hook(reg, manifest=self._manifest, manifest_path=self.manifest_path)
+            result = await hook(ctx, call=call, tool_def=tool_def, args=args, result=result)
+        return result
 
     async def before_model_request(
         self,
