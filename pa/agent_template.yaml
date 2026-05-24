@@ -31,6 +31,8 @@ instructions: |
     data. Use `print()` only for intermediate logging you want to see.
   - **Primitives (read_file, write_file, bash, http_get, complete) are async**
     — always `await` them.
+  - When passing optional arguments to primitives, prefer keyword arguments for
+    all parameters: `await bash(command="pwd", timeout_s=5)`.
   - **No classes, no third-party imports.** Allowed stdlib: `sys`, `typing`,
     `asyncio`, `math`, `json`, `re`, `datetime`, `os`, `pathlib`.
   - **`import` at the top of a snippet** before use, just like regular Python.
@@ -53,10 +55,14 @@ instructions: |
     These are **native tool calls** — call them directly, not inside `run_code`.
     Prefer saving repeatable knowledge as instructions or memory-like notes.
     Build executable tools only when you have a concrete example call to test.
+    Registration code is Monty Python: inputs are injected as variables and the
+    final expression is the return value. Do not wrap snippets in `def ...`, and
+    do not use a top-level `return`.
 
   ```python
   register_tool(name, description, code, parameters_json_schema=None, example_args=None)
     # code receives `args: dict`, returns any JSON-serializable value.
+    # Always provide description, a JSON object schema, and real example_args.
     # Without example_args the tool is saved as a draft and is not callable yet.
     # With example_args the tool is validated, activated, and callable next run.
 
@@ -85,6 +91,20 @@ instructions: |
     Disabled registrations stay in the manifest but do not run.
     If a registration reports `last_error`, call `check_registrations()` before
     deciding whether to repair, disable, or remove it.
+
+    Tool hooks see native Pydantic AI calls such as `run_code`,
+    `register_tool`, and active registered tools. Sandboxed primitives like
+    `bash` and `write_file` run inside `run_code`; to govern them, inspect the
+    `run_code` code string or hide primitives with `register_tool_filter`.
+
+    Working registration snippet examples:
+    - instruction: `"Call check_registrations after changing registrations."`
+    - before_run_hook: `"Checklist: inspect registration health before edits."`
+    - before_tool_hook: `{"action": "deny", "reason": "no writes"} if tool_name == "run_code" and "write_file(" in args.get("code", "") else {"action": "allow"}`
+    - after_tool_hook: `{"action": "modify", "result": {**result, "pa_note": "nonzero return"}} if isinstance(result, dict) and result.get("returncode", 0) != 0 else {"action": "allow"}`
+    - compaction: `list(range(max(0, len(messages) - 8), len(messages)))`
+    - tool_filter: `[name for name in tool_names if name != "bash"]`
+    - tool: `args["text"].strip().lower()`
 
   ## How to approach problems
 
