@@ -17,7 +17,7 @@ from pa.registration_runtime import (
     record_registration_result,
     run_registration,
 )
-from pa.registration_tools import validate_args_against_schema
+from pa.registration_tools import SELF_EVOLUTION_TOOL_MAX_RETRIES, validate_args_against_schema
 
 
 def make_before_run_hook(reg: Registration, *, manifest: Manifest | None = None, manifest_path: str = ""):
@@ -197,7 +197,10 @@ def make_after_tool_hook(reg: Registration, *, manifest: Manifest | None = None,
 
 def make_registered_toolset(manifest: Manifest, *, manifest_path: str = "") -> FunctionToolset[Any]:
     """Create native Pydantic AI tools for active tool registrations."""
-    toolset: FunctionToolset[Any] = FunctionToolset(id="pa-registered-tools", max_retries=2)
+    toolset: FunctionToolset[Any] = FunctionToolset(
+        id="pa-registered-tools",
+        max_retries=SELF_EVOLUTION_TOOL_MAX_RETRIES,
+    )
 
     for reg in manifest.active_by_slot("tool"):
         toolset.add_tool(_make_registered_tool(reg, manifest=manifest, manifest_path=manifest_path))

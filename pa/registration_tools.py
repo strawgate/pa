@@ -38,6 +38,8 @@ _SCALAR_JSON_TYPES = {
     "array": list,
 }
 
+SELF_EVOLUTION_TOOL_MAX_RETRIES = 15
+
 _REGISTRATION_TOOLSET_INSTRUCTIONS = """\
 Registration code is Monty Python. Inputs are injected as variables and the
 registration returns the value of the final expression. Do not wrap snippets in
@@ -59,6 +61,11 @@ Working snippets:
 - tool_filter: `[name for name in tool_names if name != "bash"]`
 - tool: `args["text"].strip().lower()` with a description, JSON schema, and
   `example_args` so it can be validated before activation.
+
+Pydantic AI tool retries are fatal when exhausted. A validation error, denied
+tool call, bad hook result, or after-tool `retry` response counts against that
+tool's retry budget. If a call fails repeatedly, change strategy, inspect
+registrations, or disable the broken registration instead of burning the budget.
 
 After adding or changing registrations, call `check_registrations()`.
 """
@@ -120,6 +127,9 @@ result is visible as the `run_code` result. The Monty code receives
 `tool_name: str`, `args: dict`, and `result`, and must return
 `{"action": "allow"}`, `{"action": "modify", "result": Any}`, or
 `{"action": "retry", "reason": str}` as its final expression.
+
+Use `retry` sparingly: each retry consumes the native tool retry budget, and
+exhausting that budget aborts the whole agent run.
 
 Example code: `{"action": "modify", "result": {**result, "pa_note": "nonzero return"}} if isinstance(result, dict) and result.get("returncode", 0) != 0 else {"action": "allow"}`
 """
@@ -616,7 +626,7 @@ def make_registration_toolset(manifest_path: str | Path, *, include_advanced: bo
     """Create native registration-management tools bound to a manifest path."""
     toolset: FunctionToolset[Any] = FunctionToolset(
         id="pa-registration-management",
-        max_retries=2,
+        max_retries=SELF_EVOLUTION_TOOL_MAX_RETRIES,
         sequential=True,
         instructions=_REGISTRATION_TOOLSET_INSTRUCTIONS,
     )

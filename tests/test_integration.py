@@ -16,6 +16,7 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel, AgentInfo
 
 from pa.manifest import Manifest
+from pa.registration_tools import SELF_EVOLUTION_TOOL_MAX_RETRIES
 from pa.runtime import build_agent
 
 
@@ -689,14 +690,15 @@ class TestSelfImprovementLoop:
         build_agent(model=FunctionModel(capture_tools)).run_sync("next")
         assert "double" not in seen_tools
 
-    def test_registration_toolset_retries_invalid_tool_args(self, agent_dir):
-        """Registration management tools allow the model to repair schema mistakes."""
+    def test_registration_toolset_allows_multiple_tool_arg_repairs(self, agent_dir):
+        """Registration management tools do not use a tiny retry budget."""
+        assert SELF_EVOLUTION_TOOL_MAX_RETRIES == 15
         call_count = 0
 
         def scripted(messages, info: AgentInfo):
             nonlocal call_count
             call_count += 1
-            if call_count == 1:
+            if call_count in (1, 2, 3):
                 return ModelResponse(
                     parts=[
                         ToolCallPart(
@@ -712,11 +714,11 @@ class TestSelfImprovementLoop:
                                 },
                                 "example_args": {"x": 2},
                             },
-                            tool_call_id="tc1",
+                            tool_call_id=f"tc{call_count}",
                         )
                     ]
                 )
-            if call_count == 2:
+            if call_count == 4:
                 return ModelResponse(
                     parts=[
                         ToolCallPart(
@@ -733,7 +735,7 @@ class TestSelfImprovementLoop:
                                 },
                                 "example_args": {"x": 2},
                             },
-                            tool_call_id="tc2",
+                            tool_call_id="tc4",
                         )
                     ]
                 )
@@ -742,7 +744,7 @@ class TestSelfImprovementLoop:
         build_agent(model=FunctionModel(scripted)).run_sync("register active")
 
         manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
-        assert call_count == 3
+        assert call_count == 5
         assert manifest["registrations"][0]["name"] == "double"
         assert manifest["registrations"][0]["status"] == "active"
 
@@ -805,6 +807,57 @@ class TestSelfImprovementLoop:
         assert result.output == "done"
         assert tool_schema["properties"]["x"]["type"] == "integer"
         assert observed_return == "6"
+
+    def test_registered_tools_allow_multiple_arg_repairs(self, agent_dir):
+        """Active registered tools share the self-evolution retry budget."""
+        assert SELF_EVOLUTION_TOOL_MAX_RETRIES == 15
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "tool",
+                "name": "double",
+                "description": "Double an integer.",
+                "code": 'args["x"] * 2',
+                "parameters_json_schema": {
+                    "type": "object",
+                    "properties": {"x": {"type": "integer"}},
+                    "required": ["x"],
+                    "additionalProperties": False,
+                },
+                "status": "active",
+                "validated_example_args": {"x": 2},
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        call_count = 0
+        observed_return = ""
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, observed_return
+            call_count += 1
+            if call_count in (1, 2, 3):
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="double",
+                            args={"x": "not-an-integer"},
+                            tool_call_id=f"tc{call_count}",
+                        )
+                    ]
+                )
+            if call_count == 4:
+                return ModelResponse(parts=[ToolCallPart(tool_name="double", args={"x": 4}, tool_call_id="tc4")])
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "double" and hasattr(part, "content"):
+                        observed_return = str(part.content)
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("use double")
+
+        assert result.output == "done"
+        assert call_count == 5
+        assert observed_return == "8"
 
     def test_broken_legacy_registered_tool_retries_instead_of_crashing(self, agent_dir):
         """Active legacy tools with bad Monty return retry feedback instead of crashing."""

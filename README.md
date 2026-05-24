@@ -51,6 +51,14 @@ prompt and native tool surface prefer lifecycle names.
 
 All registrations persist in `pa/registrations.yaml`.
 
+**Retry budgets:** Pydantic AI raises `UnexpectedModelBehavior` and aborts the
+current agent run when a tool exhausts its retry budget. pa configures
+`run_code`, registration-management tools, and active registered tools with a
+budget of 15 retries. Schema validation errors, hook denials, bad hook outputs,
+and after-tool `retry` responses all count toward the relevant native tool's
+budget, so broken self-evolution should be inspected or disabled rather than
+retried blindly.
+
 ## Concepts
 
 - **Registration**: a named Monty snippet bound to a slot. Created via

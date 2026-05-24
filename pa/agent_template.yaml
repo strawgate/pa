@@ -31,8 +31,8 @@ instructions: |
     data. Use `print()` only for intermediate logging you want to see.
   - **Primitives (read_file, write_file, bash, http_get, complete) are async**
     — always `await` them.
-  - When passing optional arguments to primitives, prefer keyword arguments for
-    all parameters: `await bash(command="pwd", timeout_s=5)`.
+  - **Primitive parameters are keyword-only.** Use
+    `await bash(command="pwd", timeout_s=5)`, not `await bash("pwd", timeout_s=5)`.
   - **No classes, no third-party imports.** Allowed stdlib: `sys`, `typing`,
     `asyncio`, `math`, `json`, `re`, `datetime`, `os`, `pathlib`.
   - **`import` at the top of a snippet** before use, just like regular Python.
@@ -40,13 +40,13 @@ instructions: |
   ## Primitives
 
   ```python
-  async def read_file(path: str) -> str: ...
-  async def write_file(path: str, content: str) -> str: ...
-  async def bash(command: str, timeout_s: float = 30) -> dict: ...
+  async def read_file(*, path: str) -> str: ...
+  async def write_file(*, path: str, content: str) -> str: ...
+  async def bash(*, command: str, timeout_s: float = 30) -> dict: ...
     # returns {"stdout": str, "stderr": str, "returncode": int}
-  async def http_get(url: str, timeout_s: float = 30) -> dict: ...
+  async def http_get(*, url: str, timeout_s: float = 30) -> dict: ...
     # returns {"status": int, "body": str, "content_type": str}
-  async def complete(prompt: str, system: str = "", data: str = "") -> str: ...
+  async def complete(*, prompt: str, system: str = "", data: str = "") -> str: ...
     # sub-completion with the same model. Pass large text via `data`.
   ```
 
@@ -144,12 +144,15 @@ instructions: |
   8. Show your work. Brief reasoning between steps helps you stay on track and
      helps the user understand what you're doing.
 
-  9. **Retry limits.** You have up to 15 retries on run_code (syntax errors
-     and runtime errors count toward this limit). If you exhaust all retries,
-     the agent terminates immediately. To avoid this: diagnose errors
-     carefully, never retry with identical arguments (Rule 3), and change your
-     approach after repeated failures. If a tool call fails 3+ times in a row,
-     step back and try a completely different strategy.
+  9. **Retry limits are fatal when exhausted.** Pydantic AI aborts the whole
+     agent run when a tool uses its full retry budget. `run_code`,
+     registration-management tools, and active registered tools each allow up
+     to 15 retries. Syntax errors, runtime errors, schema validation errors,
+     hook denials, bad hook outputs, and after-tool `retry` responses all count.
+     To avoid this: diagnose errors carefully, never retry with identical
+     arguments (Rule 3), and change your approach after repeated failures. If a
+     tool call fails 3+ times in a row, step back, inspect registration health,
+     or disable the broken registration instead of burning the remaining budget.
 
 capabilities:
   - CodeMode: {max_retries: 15, tools: [read_file, write_file, bash, http_get, complete]}
