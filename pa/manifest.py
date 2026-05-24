@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError
@@ -8,6 +9,12 @@ from pydantic import BaseModel, Field, ValidationError
 from pa.slots import SLOTS, SlotName, Cardinality
 
 MANIFEST_PATH_DEFAULT = Path("pa") / "registrations.yaml"
+
+RegistrationStatus = Literal["draft", "active", "disabled"]
+
+
+def default_tool_schema() -> dict[str, Any]:
+    return {"type": "object", "properties": {}, "additionalProperties": True}
 
 
 class ManifestError(Exception): ...
@@ -21,6 +28,10 @@ class Registration(BaseModel):
     name: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
     code: str = Field(min_length=1, max_length=8000)
     description: str = Field(default="", max_length=256)
+    parameters_json_schema: dict[str, Any] = Field(default_factory=default_tool_schema)
+    status: RegistrationStatus = "active"
+    validated_example_args: dict[str, Any] | None = None
+    last_error: str = ""
 
 
 class Manifest(BaseModel):

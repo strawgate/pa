@@ -50,6 +50,31 @@ class BridgeResult:
     duration_ms: float
 
 
+def compile_registration(
+    *,
+    slot: SlotName,
+    name: str,
+    code: str,
+    extra_stubs: str | None = None,
+) -> None:
+    """Type-check a registration without executing it."""
+    slot_def = SLOTS[slot]
+    stubs = _build_stubs(slot_def, {}, extra_stubs)
+    script_name = f"pa/registrations/{slot}/{name}.py"
+    try:
+        pm.Monty(
+            code,
+            inputs=list(slot_def.inputs),
+            script_name=script_name,
+            type_check=True,
+            type_check_stubs=stubs,
+        )
+    except pm.MontySyntaxError as e:
+        raise MontySyntaxBridgeError(f"{name}: syntax error: {e}") from e
+    except pm.MontyTypingError as e:
+        raise MontySyntaxBridgeError(f"{name}: type error: {e}") from e
+
+
 async def execute_registration(
     *,
     slot: SlotName,
