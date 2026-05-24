@@ -30,6 +30,14 @@ def agent_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+def enable_advanced_registration_tools(agent_dir: Path) -> None:
+    agent_yaml = yaml.safe_load((agent_dir / "agent.yaml").read_text())
+    for cap in agent_yaml["capabilities"]:
+        if "PaRegistrations" in cap:
+            cap["PaRegistrations"] = {"expose_advanced_registration_tools": True}
+    (agent_dir / "agent.yaml").write_text(yaml.safe_dump(agent_yaml))
+
+
 class TestBuildAgent:
     def test_constructs_with_function_model(self, agent_dir):
         """build_agent() with model override constructs without API keys."""
@@ -53,10 +61,30 @@ class TestBuildAgent:
         assert "run_code" in seen_tools
         assert "register_tool" in seen_tools
         assert "register_instruction" in seen_tools
+        assert "register_guard" in seen_tools
+        assert "validate_tool" in seen_tools
         assert "list_registrations" in seen_tools
         assert "check_registrations" in seen_tools
         assert "disable_registration" in seen_tools
         assert "remove_registration" in seen_tools
+        assert "register_compaction" not in seen_tools
+        assert "register_tool_filter" not in seen_tools
+        assert "disable_tool" not in seen_tools
+
+    def test_advanced_registration_tools_are_opt_in(self, agent_dir):
+        """Host/admin registration surfaces can be exposed explicitly."""
+        enable_advanced_registration_tools(agent_dir)
+        seen_tools = []
+
+        def capture_tools(messages, info: AgentInfo):
+            seen_tools.extend(t.name for t in info.function_tools)
+            return ModelResponse(parts=[TextPart(content="hi")])
+
+        build_agent(model=FunctionModel(capture_tools)).run_sync("test")
+
+        assert "register_compaction" in seen_tools
+        assert "register_tool_filter" in seen_tools
+        assert "disable_tool" in seen_tools
 
     def test_run_code_description_lists_all_tools(self, agent_dir):
         """The run_code tool description includes the 5 sandboxed primitives."""
@@ -333,6 +361,7 @@ class TestSelfImprovementLoop:
 
     def test_register_compaction_via_run_code(self, agent_dir):
         """Model calls register_compaction as a native tool."""
+        enable_advanced_registration_tools(agent_dir)
         call_count = 0
 
         def scripted(messages, info: AgentInfo):

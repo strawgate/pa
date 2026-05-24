@@ -36,6 +36,7 @@ class PaRegistrations(AbstractCapability[Any]):
     """Loads ./pa/registrations.yaml and wires entries through native Pydantic AI hooks."""
 
     manifest_path: str = str(MANIFEST_PATH_DEFAULT)
+    expose_advanced_registration_tools: bool = False
     _manifest: Manifest = field(init=False, repr=False)
     _compaction: Callable[[list[ModelMessage]], Awaitable[list[ModelMessage]]] | None = field(
         default=None, init=False, repr=False
@@ -52,13 +53,16 @@ class PaRegistrations(AbstractCapability[Any]):
             )
 
     @classmethod
-    def from_spec(cls, args: Any = (), kwargs: Any = {}) -> "PaRegistrations":
-        if isinstance(kwargs, dict):
-            return cls(**kwargs)
-        return cls()
+    def from_spec(cls, *args: Any, **kwargs: Any) -> "PaRegistrations":
+        if len(args) == 2 and not kwargs and isinstance(args[0], tuple) and isinstance(args[1], dict):
+            return cls(*args[0], **args[1])
+        return cls(*args, **kwargs)
 
     def get_toolset(self) -> AbstractToolset[Any] | None:
-        toolset = make_registration_toolset(self.manifest_path)
+        toolset = make_registration_toolset(
+            self.manifest_path,
+            include_advanced=self.expose_advanced_registration_tools,
+        )
         registered = make_registered_toolset(self._manifest, manifest_path=self.manifest_path)
         for tool in registered.tools.values():
             toolset.add_tool(tool)

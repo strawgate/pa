@@ -26,14 +26,25 @@ pa repl          # interactive REPL with history
 to create a persistent tool. Tools without an example are saved as drafts.
 Only validated active tools appear as native tools on the next run.
 
-Other hook slots:
-- `register_instruction` — dynamic system prompt additions
-- `register_compaction` — history compaction (single slot)
-- `register_guard` — pre-execution guard on tool calls (allow/deny/modify)
-- `register_tool_filter` — filter available primitives with native tool preparation
-- `validate_tool` / `disable_tool` — promote or quarantine registered tools
+Default agent-facing registration tools:
+- `register_tool` — save a proven repeatable operation as a native tool
+- `validate_tool` — promote a draft tool after a concrete example works
+- `register_instruction` — remember durable preferences, project conventions,
+  or workflow guidance
+- `register_guard` — enforce durable tool-call policy, such as blocking risky
+  commands or normalizing arguments
 - `list_registrations` / `check_registrations` — inspect registration health
-- `disable_registration` / `remove_registration` — manage registrations
+- `disable_registration` / `remove_registration` — quarantine or remove bad
+  registrations
+
+Advanced registration surfaces:
+- `register_compaction` — host-managed history retention policy
+- `register_tool_filter` — host/admin primitive availability policy
+- `disable_tool` — legacy tool-specific alias for `disable_registration`
+
+Advanced surfaces are supported by the runtime but are not exposed to the agent
+by default. Set `PaRegistrations: {expose_advanced_registration_tools: true}`
+when you explicitly want the agent to author those policies.
 
 **`complete()`** allows the agent to call its own model for sub-tasks
 (summarization, code generation, structured extraction).
@@ -43,8 +54,9 @@ All registrations persist in `pa/registrations.yaml`.
 ## Concepts
 
 - **Registration**: a named Monty snippet bound to a slot. Created via
-  `register_tool`, `validate_tool`, `register_instruction`,
-  `register_compaction`, `register_guard`, or `register_tool_filter`.
+  default agent-facing tools such as `register_tool`, `validate_tool`,
+  `register_instruction`, and `register_guard`, or by advanced host/admin
+  tools such as `register_compaction` and `register_tool_filter`.
 - **Slot**: one of `tool`, `instruction`, `compaction`, `guard`, `tool_filter`.
   `compaction` is single-cardinality; the rest stack. Tool registrations have
   `draft`, `active`, or `disabled` status. Disabled registrations remain in the

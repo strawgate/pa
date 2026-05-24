@@ -422,7 +422,7 @@ def _remove_registration(name: str, *, path: Path | str) -> str:
     return f"OK: removed {removed.slot}/{removed.name}."
 
 
-def make_registration_toolset(manifest_path: str | Path) -> FunctionToolset[Any]:
+def make_registration_toolset(manifest_path: str | Path, *, include_advanced: bool = False) -> FunctionToolset[Any]:
     """Create native registration-management tools bound to a manifest path."""
     toolset: FunctionToolset[Any] = FunctionToolset(id="pa-registration-management")
     path = Path(manifest_path)
@@ -480,16 +480,9 @@ def make_registration_toolset(manifest_path: str | Path) -> FunctionToolset[Any]
     toolset.tool_plain(name="register_instruction", description=register_instruction_bound.__doc__)(
         register_instruction_bound
     )
-    toolset.tool_plain(name="register_compaction", description=register_compaction_bound.__doc__)(
-        register_compaction_bound
-    )
     toolset.tool_plain(name="register_guard", description=register_guard_bound.__doc__)(register_guard_bound)
-    toolset.tool_plain(name="register_tool_filter", description=register_tool_filter_bound.__doc__)(
-        register_tool_filter_bound
-    )
     toolset.tool_plain(name="register_tool", description=register_tool_bound.__doc__)(register_tool_bound)
     toolset.tool_plain(name="validate_tool", description=validate_tool_bound.__doc__)(validate_tool_bound)
-    toolset.tool_plain(name="disable_tool", description=disable_tool_bound.__doc__)(disable_tool_bound)
     toolset.tool_plain(name="disable_registration", description=disable_registration_bound.__doc__)(
         disable_registration_bound
     )
@@ -502,4 +495,12 @@ def make_registration_toolset(manifest_path: str | Path) -> FunctionToolset[Any]
     toolset.tool_plain(name="remove_registration", description=remove_registration_bound.__doc__)(
         remove_registration_bound
     )
+    if include_advanced:
+        toolset.tool_plain(name="register_compaction", description=register_compaction_bound.__doc__)(
+            register_compaction_bound
+        )
+        toolset.tool_plain(name="register_tool_filter", description=register_tool_filter_bound.__doc__)(
+            register_tool_filter_bound
+        )
+        toolset.tool_plain(name="disable_tool", description=disable_tool_bound.__doc__)(disable_tool_bound)
     return toolset
