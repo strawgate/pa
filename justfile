@@ -19,9 +19,9 @@ fix:
     uv run ruff format pa/ tests/
     uv run ruff check --fix pa/ tests/
 
-# Type check with pyright
+# Type check with ty
 typecheck:
-    uv run pyright pa/
+    uv run ty check pa/
 
 # Run tests
 test:
@@ -37,5 +37,5 @@ install:
 
 # Clean build artifacts
 clean:
-    rm -rf build/ dist/ *.egg-info/ .pytest_cache/ .ruff_cache/ .pyright_cache/ .mypy_cache/ htmlcov/
+    rm -rf build/ dist/ *.egg-info/ .pytest_cache/ .ruff_cache/ .mypy_cache/ htmlcov/
     find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

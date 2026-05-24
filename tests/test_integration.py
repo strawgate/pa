@@ -88,11 +88,13 @@ class TestSelfImprovementLoop:
             call_count += 1
             if call_count == 1:
                 return ModelResponse(
-                    parts=[ToolCallPart(
-                        tool_name="register_instruction",
-                        args={"name": "cheerio", "code": '"Always end with Cheerio!"'},
-                        tool_call_id="tc1",
-                    )]
+                    parts=[
+                        ToolCallPart(
+                            tool_name="register_instruction",
+                            args={"name": "cheerio", "code": '"Always end with Cheerio!"'},
+                            tool_call_id="tc1",
+                        )
+                    ]
                 )
             return ModelResponse(parts=[TextPart(content="done")])
 
@@ -116,11 +118,13 @@ class TestSelfImprovementLoop:
             call_count += 1
             if call_count == 1:
                 return ModelResponse(
-                    parts=[ToolCallPart(
-                        tool_name="register_instruction",
-                        args={"name": "cheerio", "code": '"Always end with Cheerio!"'},
-                        tool_call_id="tc1",
-                    )]
+                    parts=[
+                        ToolCallPart(
+                            tool_name="register_instruction",
+                            args={"name": "cheerio", "code": '"Always end with Cheerio!"'},
+                            tool_call_id="tc1",
+                        )
+                    ]
                 )
             return ModelResponse(parts=[TextPart(content="registered")])
 
@@ -138,7 +142,9 @@ class TestSelfImprovementLoop:
         agent2.run_sync("What is 2+2?")
 
         dynamic_contents = [p.content for p in instruction_parts if getattr(p, "dynamic", False)]
-        assert any("Cheerio" in c for c in dynamic_contents), f"Expected 'Cheerio' in dynamic instructions, got: {dynamic_contents}"
+        assert any("Cheerio" in c for c in dynamic_contents), (
+            f"Expected 'Cheerio' in dynamic instructions, got: {dynamic_contents}"
+        )
 
     def test_register_guard_via_run_code(self, agent_dir):
         """Model calls register_guard as a native tool; manifest persists it."""
@@ -150,11 +156,13 @@ class TestSelfImprovementLoop:
             if call_count == 1:
                 guard_code = '{"action": "deny", "reason": "no bash"} if tool_name == "bash" else {"action": "allow"}'
                 return ModelResponse(
-                    parts=[ToolCallPart(
-                        tool_name="register_guard",
-                        args={"name": "no_bash", "code": guard_code},
-                        tool_call_id="tc1",
-                    )]
+                    parts=[
+                        ToolCallPart(
+                            tool_name="register_guard",
+                            args={"name": "no_bash", "code": guard_code},
+                            tool_call_id="tc1",
+                        )
+                    ]
                 )
             return ModelResponse(parts=[TextPart(content="done")])
 
@@ -174,11 +182,13 @@ class TestSelfImprovementLoop:
             call_count += 1
             if call_count == 1:
                 return ModelResponse(
-                    parts=[ToolCallPart(
-                        tool_name="register_compaction",
-                        args={"name": "keep_last", "code": "[len(messages) - 1]"},
-                        tool_call_id="tc1",
-                    )]
+                    parts=[
+                        ToolCallPart(
+                            tool_name="register_compaction",
+                            args={"name": "keep_last", "code": "[len(messages) - 1]"},
+                            tool_call_id="tc1",
+                        )
+                    ]
                 )
             return ModelResponse(parts=[TextPart(content="done")])
 
@@ -200,16 +210,16 @@ class TestSelfImprovementLoop:
             call_count += 1
             if call_count == 1:
                 return ModelResponse(
-                    parts=[ToolCallPart(
-                        tool_name="register_instruction",
-                        args={"name": "cheerio", "code": '"Cheerio!"'},
-                        tool_call_id="tc1",
-                    )]
+                    parts=[
+                        ToolCallPart(
+                            tool_name="register_instruction",
+                            args={"name": "cheerio", "code": '"Cheerio!"'},
+                            tool_call_id="tc1",
+                        )
+                    ]
                 )
             elif call_count == 2:
-                return ModelResponse(
-                    parts=[ToolCallPart(tool_name="list_registrations", args={}, tool_call_id="tc2")]
-                )
+                return ModelResponse(parts=[ToolCallPart(tool_name="list_registrations", args={}, tool_call_id="tc2")])
             else:
                 # Capture the tool return from list_registrations
                 for msg in messages:
@@ -232,19 +242,23 @@ class TestSelfImprovementLoop:
             call_count += 1
             if call_count == 1:
                 return ModelResponse(
-                    parts=[ToolCallPart(
-                        tool_name="register_instruction",
-                        args={"name": "cheerio", "code": '"hi"'},
-                        tool_call_id="tc1",
-                    )]
+                    parts=[
+                        ToolCallPart(
+                            tool_name="register_instruction",
+                            args={"name": "cheerio", "code": '"hi"'},
+                            tool_call_id="tc1",
+                        )
+                    ]
                 )
             elif call_count == 2:
                 return ModelResponse(
-                    parts=[ToolCallPart(
-                        tool_name="remove_registration",
-                        args={"name": "cheerio"},
-                        tool_call_id="tc2",
-                    )]
+                    parts=[
+                        ToolCallPart(
+                            tool_name="remove_registration",
+                            args={"name": "cheerio"},
+                            tool_call_id="tc2",
+                        )
+                    ]
                 )
             return ModelResponse(parts=[TextPart(content="done")])
 

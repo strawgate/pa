@@ -74,6 +74,7 @@ def _resolve_model_from_yaml(spec_path: Path) -> Model | None:
 
     # Import the model class dynamically
     import importlib
+
     module_path, class_name = class_path.rsplit(".", 1)
     mod = importlib.import_module(module_path)
     model_cls = getattr(mod, class_name)
@@ -83,6 +84,7 @@ def _resolve_model_from_yaml(spec_path: Path) -> Model | None:
         provider = _make_direct_provider(sdk, base_url)
     else:
         from pydantic_ai.providers.gateway import gateway_provider
+
         provider = gateway_provider(sdk, route=route)
 
     return model_cls(model_name, provider=provider)
@@ -91,6 +93,7 @@ def _resolve_model_from_yaml(spec_path: Path) -> Model | None:
 def _make_direct_provider(sdk: str, base_url: str):
     """Construct a provider pointing directly at a base URL (no gateway)."""
     import os
+
     api_key = os.getenv("MINIMAX_API_KEY") or os.getenv("PYDANTIC_AI_GATEWAY_API_KEY", "")
 
     if sdk == "anthropic":
@@ -109,6 +112,7 @@ def _make_direct_provider(sdk: str, base_url: str):
         return GroqProvider(api_key=api_key, base_url=base_url)
     else:
         raise ValueError(f"Direct base_url not supported for sdk={sdk!r}")
+
 
 # All primitive tools and their names
 _PRIMITIVES: dict[str, Callable[..., Any]] = {
@@ -129,12 +133,14 @@ def _apply_tool_filters(manifest: Manifest, tool_names: list[str]) -> list[str]:
     names = list(tool_names)
     for reg in filters:
         try:
-            res = asyncio.run(execute_registration(
-                slot="tool_filter",
-                name=reg.name,
-                code=reg.code,
-                inputs={"tool_names": names},
-            ))
+            res = asyncio.run(
+                execute_registration(
+                    slot="tool_filter",
+                    name=reg.name,
+                    code=reg.code,
+                    inputs={"tool_names": names},
+                )
+            )
             names = [n for n in res.value if n in names]
         except (MontyBridgeError, Exception):
             pass  # fail-safe: keep current list if filter crashes
@@ -147,6 +153,7 @@ def _make_registered_tool(reg) -> Callable[..., Any]:
     The resulting function accepts **kwargs, runs the Monty code with
     args=kwargs, and returns the result.
     """
+
     async def _tool(**kwargs: Any) -> Any:
         res = await execute_registration(
             slot="tool",
@@ -200,7 +207,7 @@ def build_agent(
         registration_tools.list_registrations,
         registration_tools.remove_registration,
     ):
-            agent.tool_plain(fn)  # pyright: ignore[reportArgumentType]
+        agent.tool_plain(fn)  # ty: ignore
     # User-defined tools from registrations
     for reg in manifest.by_slot("tool"):
         agent.tool_plain(_make_registered_tool(reg))
@@ -222,6 +229,7 @@ def _build_context_prompt() -> str:
     from AGENTS.md if present.
     """
     import datetime
+
     date = datetime.date.today().isoformat()
     cwd = str(Path.cwd())
 
@@ -233,7 +241,6 @@ def _build_context_prompt() -> str:
         content = agents_md.read_text(encoding="utf-8").strip()
         if content:
             parts.append("\n<project_context>\n" + content + "\n</project_context>")
-
 
     return "".join(parts)
 

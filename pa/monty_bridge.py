@@ -18,7 +18,8 @@ from typing import Any, Optional, Literal
 """
 
 try:
-    import logfire as _logfire  # type: ignore
+    import logfire as _logfire
+
     _LOGFIRE_SPAN = _logfire.span if _logfire.DEFAULT_LOGFIRE_INSTANCE.config.send_to_logfire else None
 except (ImportError, AttributeError):
     _LOGFIRE_SPAN = None
@@ -30,20 +31,16 @@ def _span_ctx(**kw: Any) -> Any:
     return nullcontext()
 
 
-class MontyBridgeError(Exception):
-    ...
+class MontyBridgeError(Exception): ...
 
 
-class MontySyntaxBridgeError(MontyBridgeError):
-    ...
+class MontySyntaxBridgeError(MontyBridgeError): ...
 
 
-class MontyRuntimeBridgeError(MontyBridgeError):
-    ...
+class MontyRuntimeBridgeError(MontyBridgeError): ...
 
 
-class MontyReturnShapeError(MontyBridgeError):
-    ...
+class MontyReturnShapeError(MontyBridgeError): ...
 
 
 @dataclass

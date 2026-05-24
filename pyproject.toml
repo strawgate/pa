@@ -20,7 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 logfire = ["logfire>=3.0"]
-dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "pytest-cov>=6", "ruff>=0.7", "pyright>=1.1"]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "pytest-cov>=6", "ruff>=0.7"]
 
 [project.scripts]
 pa = "pa.cli:app"
@@ -41,4 +41,13 @@ asyncio_mode = "auto"
 addopts = "-ra --strict-markers"
 filterwarnings = [
     "ignore::logfire._internal.config.LogfireNotConfiguredWarning",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6",
+    "ruff>=0.7",
+    "ty>=0.0.39",
 ]

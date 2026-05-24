@@ -147,7 +147,7 @@ def repl(no_history: bool = typer.Option(False, "--no-history", help="Start with
 
 def _try_logfire() -> None:
     try:
-        import logfire  # type: ignore
+        import logfire
 
         logfire.configure(send_to_logfire="if-token-present")
         logfire.instrument_pydantic_ai()

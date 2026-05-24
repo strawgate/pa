@@ -28,8 +28,8 @@ jobs:
       - name: Lint (ruff)
         run: uv run ruff check pa/ tests/
 
-      - name: Type check (pyright)
-        run: uv run pyright pa/
+      - name: Type check (ty)
+        run: uv run ty check pa/
 
       - name: Run tests
         run: uv run pytest tests/ -v --cov=pa --cov-report=xml

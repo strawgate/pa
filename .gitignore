@@ -20,9 +20,6 @@ htmlcov/
 coverage.xml
 *.log
 
-# Type checker
-.pyright_cache/
-.mypy_cache/
 
 # IDE
 .vscode/

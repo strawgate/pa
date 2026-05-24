@@ -6,6 +6,7 @@ History is stored in ``pa/history.json`` in the current working directory
 agent, and the updated history is written back after the run.  This gives the
 agent memory of recent work without unbounded growth.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -34,9 +35,7 @@ def _safe_truncate(messages: list, max_messages: int) -> list:
 
     # Find the first ModelRequest whose parts are solely UserPromptPart(s)
     for i, msg in enumerate(candidates):
-        if isinstance(msg, ModelRequest) and all(
-            isinstance(p, UserPromptPart) for p in msg.parts
-        ):
+        if isinstance(msg, ModelRequest) and all(isinstance(p, UserPromptPart) for p in msg.parts):
             return list(candidates[i:])
 
     # No clean boundary found (e.g. all messages are tool turns) — drop all.

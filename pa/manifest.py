@@ -10,12 +10,10 @@ from pa.slots import SLOTS, SlotName, Cardinality
 MANIFEST_PATH_DEFAULT = Path("pa") / "registrations.yaml"
 
 
-class ManifestError(Exception):
-    ...
+class ManifestError(Exception): ...
 
 
-class CardinalityError(ManifestError):
-    ...
+class CardinalityError(ManifestError): ...
 
 
 class Registration(BaseModel):
@@ -56,8 +54,7 @@ class Manifest(BaseModel):
     def add(self, reg: Registration) -> None:
         if self.find(reg.name) is not None:
             raise ManifestError(
-                f"a registration named {reg.name!r} already exists; "
-                f"call remove_registration({reg.name!r}) first."
+                f"a registration named {reg.name!r} already exists; call remove_registration({reg.name!r}) first."
             )
         slot_def = SLOTS[reg.slot]
         if slot_def.cardinality is Cardinality.ONE and self.by_slot(reg.slot):
