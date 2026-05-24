@@ -1062,7 +1062,7 @@ class TestSelfImprovementLoop:
 
 class TestCLIInit:
     def test_pa_init_creates_files(self, tmp_path, monkeypatch):
-        """pa init creates agent.yaml and pa/registrations.yaml."""
+        """pa init creates agent.yaml, pa/registrations.yaml, and agent-readable docs."""
         monkeypatch.chdir(tmp_path)
         from pa.cli import init
 
@@ -1070,6 +1070,9 @@ class TestCLIInit:
 
         assert (tmp_path / "agent.yaml").exists()
         assert (tmp_path / "pa" / "registrations.yaml").exists()
+        guide = tmp_path / "docs" / "registrations.md"
+        assert guide.exists()
+        assert "Registration Guide" in guide.read_text()
 
         # Validate agent.yaml is parseable
         agent_yaml = yaml.safe_load((tmp_path / "agent.yaml").read_text())
@@ -1085,6 +1088,8 @@ class TestCLIInit:
         init()
         # Modify agent.yaml
         (tmp_path / "agent.yaml").write_text("model: test\n")
+        (tmp_path / "docs" / "registrations.md").write_text("custom guide\n")
         init()
         # Should not have been overwritten
         assert (tmp_path / "agent.yaml").read_text() == "model: test\n"
+        assert (tmp_path / "docs" / "registrations.md").read_text() == "custom guide\n"

@@ -57,6 +57,8 @@ instructions: |
     These are **native tool calls** — call them directly, not inside `run_code`.
     Prefer saving repeatable knowledge as instructions or memory-like notes.
     Build executable tools only when you have a concrete example call to test.
+    If the task involves registrations and `docs/registrations.md` exists,
+    read it first with `read_file(path="docs/registrations.md")`.
     Registration code is Monty Python: inputs are injected as variables and the
     final expression is the return value. Do not wrap snippets in `def ...`, and
     do not use a top-level `return`.
