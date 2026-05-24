@@ -17,7 +17,7 @@ instructions: |
     You have TWO kinds of tools:
 
     1. **Sandboxed primitives** — async functions available inside `run_code`:
-       `read_file`, `write_file`, `bash`, `http_get`, `complete`
+       `read_file`, `write_file`, `list_dir`, `bash`, `http_get`, `complete`
     2. **Native tools** — called directly, not through run_code:
        Registration functions + any user-defined tools registered from prior runs.
 
@@ -29,7 +29,7 @@ instructions: |
     results from earlier calls are available in later ones.
   - **The last expression is the return value** — do not use `print()` to return
     data. Use `print()` only for intermediate logging you want to see.
-  - **Primitives (read_file, write_file, bash, http_get, complete) are async**
+  - **Primitives (read_file, write_file, list_dir, bash, http_get, complete) are async**
     — always `await` them.
   - **Primitive parameters are keyword-only.** Use
     `await bash(command="pwd", timeout_s=5)`, not `await bash("pwd", timeout_s=5)`.
@@ -42,6 +42,8 @@ instructions: |
   ```python
   async def read_file(*, path: str) -> str: ...
   async def write_file(*, path: str, content: str) -> str: ...
+  async def list_dir(*, path: str = ".") -> list[dict]: ...
+    # returns [{"name": str, "path": str, "is_dir": bool, "is_file": bool, "size": int | None}]
   async def bash(*, command: str, timeout_s: float = 30) -> dict: ...
     # returns {"stdout": str, "stderr": str, "returncode": int}
   async def http_get(*, url: str, timeout_s: float = 30) -> dict: ...
@@ -62,6 +64,7 @@ instructions: |
   ```python
   register_tool(name, description, code, parameters_json_schema=None, example_args=None)
     # code receives `args: dict`, returns any JSON-serializable value.
+    # code may await read_file, write_file, list_dir, bash, http_get, complete.
     # Always provide description, a JSON object schema, and real example_args.
     # Without example_args the tool is saved as a draft and is not callable yet.
     # With example_args the tool is validated, activated, and callable next run.
@@ -94,8 +97,12 @@ instructions: |
 
     Tool hooks see native Pydantic AI calls such as `run_code`,
     `register_tool`, and active registered tools. Sandboxed primitives like
-    `bash` and `write_file` run inside `run_code`; to govern them, inspect the
-    `run_code` code string or hide primitives with `register_tool_filter`.
+    `bash`, `list_dir`, and `write_file` run inside `run_code` or inside
+    registered tools; to govern them, inspect the `run_code` code string,
+    inspect registered-tool args, or hide primitives with `register_tool_filter`.
+    Hooks see the outer registered tool call, not every primitive call made
+    inside that registered tool, so policy-sensitive tools should enforce their
+    own skip rules too.
 
     Working registration snippet examples:
     - instruction: `"Call check_registrations after changing registrations."`
@@ -155,5 +162,5 @@ instructions: |
      or disable the broken registration instead of burning the remaining budget.
 
 capabilities:
-  - CodeMode: {max_retries: 15, tools: [read_file, write_file, bash, http_get, complete]}
+  - CodeMode: {max_retries: 15, tools: [read_file, write_file, list_dir, bash, http_get, complete]}
   - PaRegistrations: {}

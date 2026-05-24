@@ -16,7 +16,7 @@ pa repl          # interactive REPL with history
 
 **Two-tier tool architecture:**
 - **Sandboxed primitives** (`run_code`): `read_file`, `write_file`, `bash`,
-  `http_get`, `complete` — available as async functions inside a Monty
+  `list_dir`, `http_get`, `complete` — available as async functions inside a Monty
   sandbox. State persists between calls (REPL-style).
 - **Native tools**: registration functions and user-defined tools registered
   from prior runs — callable directly, visible in the agent's tool list.
@@ -70,9 +70,11 @@ retried blindly.
   `compaction` is single-cardinality; the rest stack. Tool registrations have
   `draft`, `active`, or `disabled` status. Disabled registrations remain in the
   manifest but are not wired into Pydantic AI hooks or toolsets.
-- **Primitives**: `read_file`, `write_file`, `bash`, `http_get`, `complete`.
-  Sandboxed inside `run_code` via Monty. The `tools` list in `agent.yaml`
-  controls which primitives are sandboxed.
+- **Primitives**: `read_file`, `write_file`, `list_dir`, `bash`, `http_get`,
+  `complete`. Sandboxed inside `run_code` via Monty. The `tools` list in
+  `agent.yaml` controls which primitives are sandboxed. Registered Monty tools
+  can also call these primitives directly; lifecycle hooks see the outer
+  registered tool call rather than each inner primitive call.
 
 ## Configuration
 
@@ -85,7 +87,7 @@ base_url: https://api.minimax.io/anthropic     # optional direct provider
 instructions: |
   You are pa — a self-evolving agent …
 capabilities:
-  - CodeMode: {max_retries: 15, tools: [read_file, write_file, bash, http_get, complete]}
+  - CodeMode: {max_retries: 15, tools: [read_file, write_file, list_dir, bash, http_get, complete]}
   - PaRegistrations: {}
 ```
 

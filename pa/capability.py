@@ -31,7 +31,7 @@ from pa.registrations import (
     make_registered_toolset,
 )
 
-_FILTERABLE_PRIMITIVES = frozenset({"read_file", "write_file", "bash", "http_get", "complete"})
+_FILTERABLE_PRIMITIVES = frozenset({"read_file", "write_file", "list_dir", "bash", "http_get", "complete"})
 _CANCELLED_TOOL_MESSAGE = "Tool call was cancelled before it returned."
 
 
