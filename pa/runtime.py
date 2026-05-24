@@ -9,6 +9,7 @@ from pydantic_ai.models import Model
 from pydantic_ai_harness import CodeMode
 
 from pa import primitives
+from pa.builtin_instructions import PA_BUILTIN_INSTRUCTIONS
 from pa.capability import PaRegistrations
 
 DEFAULT_AGENT_SPEC = Path("agent.yaml")
@@ -142,6 +143,7 @@ def build_agent(
         str(agent_spec_path),
         custom_capability_types=[PaRegistrations, CodeMode],
         model=model,
+        instructions=PA_BUILTIN_INSTRUCTIONS,
         defer_model_check=model is None,
     )
     # PaRegistrations.prepare_tools applies tool_filter registrations through

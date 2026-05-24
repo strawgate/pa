@@ -31,6 +31,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["pa"]
+force-include = { "docs/registrations.md" = "docs/registrations.md" }
 
 [tool.ruff]
 line-length = 120
