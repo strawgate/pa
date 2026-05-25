@@ -26,7 +26,6 @@ from pa.registrations import (
     make_before_run_hook,
     make_before_tool_hook,
     make_compaction_fn,
-    make_guard_hook,
     make_instruction_fn,
     make_registered_toolset,
 )
@@ -37,7 +36,7 @@ _CANCELLED_TOOL_MESSAGE = "Tool call was cancelled before it returned."
 
 @dataclass
 class PaRegistrations(AbstractCapability[Any]):
-    """Loads ./pa/registrations.yaml and wires entries through native Pydantic AI hooks."""
+    """Loads pa's registrations manifest and wires entries through native Pydantic AI hooks."""
 
     manifest_path: str = str(MANIFEST_PATH_DEFAULT)
     expose_advanced_registration_tools: bool = True
@@ -56,12 +55,6 @@ class PaRegistrations(AbstractCapability[Any]):
                 manifest=self._manifest,
                 manifest_path=self.manifest_path,
             )
-
-    @classmethod
-    def from_spec(cls, *args: Any, **kwargs: Any) -> "PaRegistrations":
-        if len(args) == 2 and not kwargs and isinstance(args[0], tuple) and isinstance(args[1], dict):
-            return cls(*args[0], **args[1])
-        return cls(*args, **kwargs)
 
     async def for_run(self, ctx: RunContext[Any]) -> "PaRegistrations":
         return type(self)(
@@ -156,12 +149,9 @@ class PaRegistrations(AbstractCapability[Any]):
         tool_def: ToolDefinition,
         args: dict[str, Any],
     ) -> dict[str, Any]:
-        """Run registered guards through native before-tool hooks."""
+        """Run registered before-tool hooks."""
         for reg in self._manifest.active_by_slot("before_tool_hook"):
             hook = make_before_tool_hook(reg, manifest=self._manifest, manifest_path=self.manifest_path)
-            args = await hook(ctx, call=call, tool_def=tool_def, args=args)
-        for reg in self._manifest.active_by_slot("guard"):
-            hook = make_guard_hook(reg, manifest=self._manifest, manifest_path=self.manifest_path)
             args = await hook(ctx, call=call, tool_def=tool_def, args=args)
         return args
 

@@ -105,13 +105,13 @@ def test_check_registrations_reports_compaction_policy_errors(tmp_cwd):
 
 def test_disable_registration_quarantines_any_slot(tmp_cwd):
     m = Manifest()
-    m.add(Registration(slot="guard", name="broken_guard", code="missing_name"))
+    m.add(Registration(slot="before_tool_hook", name="broken_hook", code="missing_name"))
     m.save()
 
-    result = disable_registration("broken_guard", "quarantined")
+    result = disable_registration("broken_hook", "quarantined")
 
-    assert result == "OK: disabled guard/broken_guard."
-    reg = Manifest.load().find("broken_guard")
+    assert result == "OK: disabled before_tool_hook/broken_hook."
+    reg = Manifest.load().find("broken_hook")
     assert reg is not None
     assert reg.status == "disabled"
     assert reg.last_error == "quarantined"

@@ -163,11 +163,6 @@ def make_before_tool_hook(reg: Registration, *, manifest: Manifest | None = None
     return _before_tool
 
 
-def make_guard_hook(reg: Registration, *, manifest: Manifest | None = None, manifest_path: str = ""):
-    """Compatibility wrapper for legacy guard registrations."""
-    return make_before_tool_hook(reg, manifest=manifest, manifest_path=manifest_path)
-
-
 def make_after_tool_hook(reg: Registration, *, manifest: Manifest | None = None, manifest_path: str = ""):
     async def _after_tool(
         ctx: RunContext[Any],

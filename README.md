@@ -7,7 +7,7 @@ runtime by writing Monty (sandboxed Python) snippets that persist across runs.
 
 ```bash
 uv add pa
-pa init          # creates agent.yaml and pa/registrations.yaml
+pa init          # creates ~/.pa/agent.yaml, forks ./agent.yaml, and creates local state
 pa run "your prompt"
 pa repl          # interactive REPL with history
 ```
@@ -43,13 +43,11 @@ Agent-facing registration tools:
 - `disable_registration` / `remove_registration` — quarantine or remove bad
   registrations
 
-`register_guard` and `disable_tool` remain compatibility aliases, but the agent
-prompt and native tool surface prefer lifecycle names.
-
 **`complete()`** allows the agent to call its own model for sub-tasks
 (summarization, code generation, structured extraction).
 
-All registrations persist in `pa/registrations.yaml`.
+Registrations persist in pa's local state directory for the current project.
+Run `pa state path` to see the exact directory.
 
 For detailed registration patterns and gotchas, see
 [`docs/registrations.md`](docs/registrations.md). `pa init` also writes this
@@ -71,7 +69,7 @@ retried blindly.
   `register_instruction`, lifecycle hook registration tools, `register_compaction`,
   or `register_tool_filter`.
 - **Slot**: one of `tool`, `instruction`, `compaction`, `before_run_hook`,
-  `after_run_hook`, `before_tool_hook`, `after_tool_hook`, legacy `guard`, or `tool_filter`.
+  `after_run_hook`, `before_tool_hook`, `after_tool_hook`, or `tool_filter`.
   `compaction` is single-cardinality; the rest stack. Tool registrations have
   `draft`, `active`, or `disabled` status. Disabled registrations remain in the
   manifest but are not wired into Pydantic AI hooks or toolsets.
@@ -83,7 +81,13 @@ retried blindly.
 
 ## Configuration
 
-`agent.yaml` (created by `pa init`):
+`pa init` creates `~/.pa/agent.yaml` as the user's default profile if needed,
+then forks that file into `./agent.yaml` for the current working directory.
+The project fork is user-owned and does not silently sync from the default.
+Set `PA_HOME` to override `~/.pa`, which is useful for tests and isolated
+workspaces.
+
+`agent.yaml`:
 
 ```yaml
 model: anthropic:claude-sonnet-4-20250514    # or gateway/<route>:<model>
@@ -100,18 +104,25 @@ Supported SDKs: `anthropic`, `openai`/`openai-chat`, `groq`, `google-cloud`.
 Model string supports `gateway/<route>:<model-name>` for Pydantic-AI Gateway.
 Set `base_url` to point directly at a provider API (bypasses the gateway).
 
-Conversation history is saved to `pa/history.json` (last 40 messages),
-giving the agent memory across runs.
+Conversation history is saved in the resolved state directory (last 40
+messages), giving the agent memory across runs without writing mutable state
+into the project by default.
 
 ## CLI
 
 ```
-pa init                    Create agent.yaml and pa/registrations.yaml
+pa init                    Create the home default, project agent.yaml, docs, and state
 pa run <prompt>            Run once, resume from saved history
 pa run --no-history <p>    Run ignoring saved history
 pa repl                    Interactive REPL (/exit, /list, /health, /clear)
 pa doctor                  Smoke-check registration health
 pa clear-history           Delete saved history
+pa state path              Print this project's state directory
+pa state ls                Show resolved config and state files
+pa state wipe --history    Delete saved conversation history
+pa state wipe --registrations --yes
+                           Reset learned registrations
+pa state wipe --all --yes  Delete this project's whole state directory
 ```
 
 ## License

@@ -210,7 +210,7 @@ Disable any registration without deleting its source.
 
 Use to quarantine broken, risky, or no-longer-wanted self-evolution behavior
 while keeping the code available for inspection or repair. Disabled
-registrations stay in `pa/registrations.yaml` but do not run.
+registrations stay in the agent's registrations manifest but do not run.
 """
 
 _DESC_LIST_REGISTRATIONS = """\
@@ -343,12 +343,6 @@ def register_compaction(name: str, code: str) -> str:
     """Register THE (single) Monty snippet that compacts history.
     Receives `messages: list[dict]`, returns `list[int]` indices to keep."""
     return _register("compaction", name, code)
-
-
-def register_guard(name: str, code: str) -> str:
-    """Register a Monty guard. Receives `tool_name: str`, `args: dict`. Returns
-    {'action': 'allow' | 'deny' | 'modify', ...}. First deny wins."""
-    return _register("guard", name, code)
 
 
 def register_before_tool_hook(name: str, code: str) -> str:
@@ -488,25 +482,9 @@ async def _validate_tool(name: str, example_args: dict[str, Any], *, path: Path 
     return f"OK: validated and activated tool/{name}. Example result: {preview}"
 
 
-def disable_tool(name: str, reason: str = "") -> str:
-    """Disable a registered tool without deleting its source."""
-    return _disable_tool(name, reason, path=MANIFEST_PATH_DEFAULT)
-
-
 def disable_registration(name: str, reason: str = "") -> str:
     """Disable any registration without deleting its source."""
     return _disable_registration(name, reason, path=MANIFEST_PATH_DEFAULT)
-
-
-def _disable_tool(name: str, reason: str = "", *, path: Path | str) -> str:
-    m = _load(path)
-    reg = m.find(name)
-    if reg is None:
-        return f"ERROR: no registration named {name!r}"
-    if reg.slot != "tool":
-        return f"ERROR: registration {name!r} is a {reg.slot}, not a tool"
-    _disable_loaded_registration(m, reg, reason, path=path)
-    return f"OK: disabled tool/{name}."
 
 
 def _disable_registration(name: str, reason: str = "", *, path: Path | str) -> str:
@@ -527,6 +505,11 @@ def _disable_loaded_registration(m: Manifest, reg: Registration, reason: str, *,
 def list_registrations() -> str:
     """Return a JSON-encoded list of registration entries."""
     return _list_registrations(path=MANIFEST_PATH_DEFAULT)
+
+
+def list_registrations_at(path: Path | str) -> str:
+    """Return registrations from a specific manifest path as JSON."""
+    return _list_registrations(path=path)
 
 
 def _registration_summary(r: Registration) -> dict[str, Any]:
@@ -562,6 +545,11 @@ def _list_registrations(*, path: Path | str) -> str:
 def check_registrations() -> str:
     """Smoke-check active registrations and return a JSON health report."""
     return _run_coro_sync(lambda: _check_registrations(path=MANIFEST_PATH_DEFAULT))
+
+
+def check_registrations_at(path: Path | str) -> str:
+    """Smoke-check active registrations from a specific manifest path."""
+    return _run_coro_sync(lambda: _check_registrations(path=path))
 
 
 async def _check_registrations(*, path: Path | str) -> str:
@@ -624,8 +612,6 @@ def _smoke_inputs(reg: Registration) -> dict[str, Any] | None:
                 to_jsonable_python(ModelResponse(parts=[TextPart(content="ok")])),
             ]
         }
-    if reg.slot == "guard":
-        return {"tool_name": "read_file", "args": {"path": "README.md"}}
     if reg.slot == "before_tool_hook":
         return {"tool_name": "read_file", "args": {"path": "README.md"}}
     if reg.slot == "after_tool_hook":

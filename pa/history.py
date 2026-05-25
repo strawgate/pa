@@ -1,22 +1,27 @@
-"""Persistent per-project conversation history.
+"""Persistent conversation history.
 
-History is stored in ``pa/history.json`` in the current working directory
-(same location as ``pa/registrations.yaml``).  On each ``pa run`` the last
-``MAX_MESSAGES`` messages are loaded, passed as ``message_history`` to the
-agent, and the updated history is written back after the run.  This gives the
-agent memory of recent work without unbounded growth.
+The CLI stores history in pa's resolved state directory under ``~/.pa`` by
+default. The path remains injectable so tests and low-level callers can use
+their own storage.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
-from pydantic_ai.messages import ModelMessagesTypeAdapter
+from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, UserPromptPart
+
+from pa.state import pa_home
 
 # Keep at most this many message objects (≈ MAX_MESSAGES/2 turns).
 MAX_MESSAGES = 40
 
-_HISTORY_PATH = Path("pa") / "history.json"
+HISTORY_PATH_DEFAULT = pa_home() / "history.json"
+
+
+def _history_path(path: Path | str | None) -> Path:
+    return Path(path) if path is not None else pa_home() / "history.json"
 
 
 def _safe_truncate(messages: list, max_messages: int) -> list:
@@ -43,28 +48,55 @@ def _safe_truncate(messages: list, max_messages: int) -> list:
     return []
 
 
-def load() -> list:
-    """Load history from pa/history.json. Returns [] if absent or corrupt."""
-    if not _HISTORY_PATH.exists():
+def _strip_persisted_instructions(messages: list) -> list:
+    """Remove old dynamic instructions before persisting or replaying history."""
+    return [
+        replace(msg, instructions=None) if isinstance(msg, ModelRequest) and msg.instructions is not None else msg
+        for msg in messages
+    ]
+
+
+def normalize_for_replay(messages: list) -> list:
+    """Return messages safe to replay into Pydantic AI."""
+    return _strip_persisted_instructions(_safe_truncate(list(messages), MAX_MESSAGES))
+
+
+def load(path: Path | str | None = None) -> list:
+    """Load history. Returns [] if absent or corrupt."""
+    history_path = _history_path(path)
+    if not history_path.exists():
         return []
     try:
-        raw = _HISTORY_PATH.read_bytes()
+        raw = history_path.read_bytes()
         messages = ModelMessagesTypeAdapter.validate_json(raw)
-        return _safe_truncate(list(messages), MAX_MESSAGES)
+        return normalize_for_replay(list(messages))
     except Exception:
         return []
 
 
-def save(messages: list) -> None:
-    """Serialize and write messages to pa/history.json."""
-    _HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+def save(messages: list, path: Path | str | None = None) -> None:
+    """Serialize and write messages."""
+    history_path = _history_path(path)
+    history_path.parent.mkdir(parents=True, exist_ok=True)
     # Trim before saving so the file never grows unbounded
-    trimmed = _safe_truncate(list(messages), MAX_MESSAGES)
+    trimmed = normalize_for_replay(list(messages))
     raw = ModelMessagesTypeAdapter.dump_json(trimmed)
-    _HISTORY_PATH.write_bytes(raw)
+    history_path.write_bytes(raw)
 
 
-def clear() -> None:
+def append_user_prompt(messages: list, content: str) -> list:
+    """Return history with a pending user prompt appended."""
+    return _safe_truncate(
+        [
+            *normalize_for_replay(list(messages)),
+            ModelRequest(parts=[UserPromptPart(content=content)]),
+        ],
+        MAX_MESSAGES,
+    )
+
+
+def clear(path: Path | str | None = None) -> None:
     """Delete the history file."""
-    if _HISTORY_PATH.exists():
-        _HISTORY_PATH.unlink()
+    history_path = _history_path(path)
+    if history_path.exists():
+        history_path.unlink()

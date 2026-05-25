@@ -153,7 +153,7 @@ def _validate_return_shape(slot: SlotName, value: Any) -> Any:
         if not isinstance(value, list) or not all(isinstance(i, int) for i in value):
             raise MontyReturnShapeError("compaction must return list[int]")
         return value
-    if slot in ("guard", "before_tool_hook"):
+    if slot == "before_tool_hook":
         if not isinstance(value, dict) or "action" not in value:
             raise MontyReturnShapeError(f"{slot} must return dict with 'action' key")
         if value["action"] not in ("allow", "deny", "modify"):
