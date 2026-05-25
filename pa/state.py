@@ -13,8 +13,6 @@ import yaml
 PACKAGE_AGENT_TEMPLATE = Path(__file__).parent / "agent_template.yaml"
 PA_HOME_ENV = "PA_HOME"
 DEFAULT_AGENT_NAME = "pa-agent"
-LEGACY_REGISTRATIONS = Path("pa") / "registrations.yaml"
-LEGACY_HISTORY = Path("pa") / "history.json"
 
 
 @dataclass(frozen=True)
@@ -29,16 +27,7 @@ class PaState:
     state_dir: Path
     registrations_path: Path
     history_path: Path
-    legacy_history_archive_path: Path
     sessions_dir: Path
-
-    @property
-    def legacy_registrations_path(self) -> Path:
-        return self.agent_spec_path.parent / LEGACY_REGISTRATIONS
-
-    @property
-    def legacy_history_path(self) -> Path:
-        return self.agent_spec_path.parent / LEGACY_HISTORY
 
 
 def pa_home() -> Path:
@@ -103,28 +92,19 @@ def resolve_state(agent_spec_path: Path | str = Path("agent.yaml")) -> PaState:
         state_dir=state_dir,
         registrations_path=state_dir / "registrations.yaml",
         history_path=state_dir / "history.json",
-        legacy_history_archive_path=state_dir / "legacy-history.json",
         sessions_dir=state_dir / "sessions",
     )
 
 
 def ensure_state(state: PaState) -> list[str]:
-    """Create state directories and migrate old project-local state once."""
+    """Create state directories for the resolved project."""
     notes: list[str] = []
     state.state_dir.mkdir(parents=True, exist_ok=True)
     state.sessions_dir.mkdir(parents=True, exist_ok=True)
 
     if not state.registrations_path.exists():
-        if state.legacy_registrations_path.exists():
-            shutil.copyfile(state.legacy_registrations_path, state.registrations_path)
-            notes.append(f"migrated {state.legacy_registrations_path} -> {state.registrations_path}")
-        else:
-            state.registrations_path.write_text("registrations: []\n")
-            notes.append(f"wrote {state.registrations_path}")
-
-    if state.legacy_history_path.exists() and not state.legacy_history_archive_path.exists():
-        shutil.copyfile(state.legacy_history_path, state.legacy_history_archive_path)
-        notes.append(f"archived legacy history {state.legacy_history_path} -> {state.legacy_history_archive_path}")
+        state.registrations_path.write_text("registrations: []\n")
+        notes.append(f"wrote {state.registrations_path}")
 
     return notes
 

@@ -8,7 +8,13 @@ class TestManifestRoundTrip:
     def test_round_trip_three_registrations(self, tmp_cwd):
         m = Manifest()
         m.add(Registration(slot="instruction", name="greet", code='"hello"'))
-        m.add(Registration(slot="guard", name="no_bash", code='{"action": "deny", "reason": "no bash"}'))
+        m.add(
+            Registration(
+                slot="before_tool_hook",
+                name="no_bash",
+                code='{"action": "deny", "reason": "no bash"}',
+            )
+        )
         m.add(Registration(slot="tool_filter", name="keep_read", code='["read_file"]'))
         m.save()
 
@@ -37,7 +43,7 @@ class TestManifestRoundTrip:
         m = Manifest()
         m.add(Registration(slot="instruction", name="greet", code='"hello"'))
         with pytest.raises(ManifestError, match="already exists"):
-            m.add(Registration(slot="guard", name="greet", code='{"action": "allow"}'))
+            m.add(Registration(slot="before_tool_hook", name="greet", code='{"action": "allow"}'))
 
     def test_invalid_name_raises_validation_error(self):
         with pytest.raises(ValidationError):

@@ -26,7 +26,6 @@ from pa.registrations import (
     make_before_run_hook,
     make_before_tool_hook,
     make_compaction_fn,
-    make_guard_hook,
     make_instruction_fn,
     make_registered_toolset,
 )
@@ -150,12 +149,9 @@ class PaRegistrations(AbstractCapability[Any]):
         tool_def: ToolDefinition,
         args: dict[str, Any],
     ) -> dict[str, Any]:
-        """Run registered guards through native before-tool hooks."""
+        """Run registered before-tool hooks."""
         for reg in self._manifest.active_by_slot("before_tool_hook"):
             hook = make_before_tool_hook(reg, manifest=self._manifest, manifest_path=self.manifest_path)
-            args = await hook(ctx, call=call, tool_def=tool_def, args=args)
-        for reg in self._manifest.active_by_slot("guard"):
-            hook = make_guard_hook(reg, manifest=self._manifest, manifest_path=self.manifest_path)
             args = await hook(ctx, call=call, tool_def=tool_def, args=args)
         return args
 

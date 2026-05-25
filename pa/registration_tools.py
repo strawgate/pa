@@ -345,12 +345,6 @@ def register_compaction(name: str, code: str) -> str:
     return _register("compaction", name, code)
 
 
-def register_guard(name: str, code: str) -> str:
-    """Register a Monty guard. Receives `tool_name: str`, `args: dict`. Returns
-    {'action': 'allow' | 'deny' | 'modify', ...}. First deny wins."""
-    return _register("guard", name, code)
-
-
 def register_before_tool_hook(name: str, code: str) -> str:
     """Register a before-tool hook that can allow, deny, or modify tool args."""
     return _register("before_tool_hook", name, code)
@@ -488,25 +482,9 @@ async def _validate_tool(name: str, example_args: dict[str, Any], *, path: Path 
     return f"OK: validated and activated tool/{name}. Example result: {preview}"
 
 
-def disable_tool(name: str, reason: str = "") -> str:
-    """Disable a registered tool without deleting its source."""
-    return _disable_tool(name, reason, path=MANIFEST_PATH_DEFAULT)
-
-
 def disable_registration(name: str, reason: str = "") -> str:
     """Disable any registration without deleting its source."""
     return _disable_registration(name, reason, path=MANIFEST_PATH_DEFAULT)
-
-
-def _disable_tool(name: str, reason: str = "", *, path: Path | str) -> str:
-    m = _load(path)
-    reg = m.find(name)
-    if reg is None:
-        return f"ERROR: no registration named {name!r}"
-    if reg.slot != "tool":
-        return f"ERROR: registration {name!r} is a {reg.slot}, not a tool"
-    _disable_loaded_registration(m, reg, reason, path=path)
-    return f"OK: disabled tool/{name}."
 
 
 def _disable_registration(name: str, reason: str = "", *, path: Path | str) -> str:
@@ -634,8 +612,6 @@ def _smoke_inputs(reg: Registration) -> dict[str, Any] | None:
                 to_jsonable_python(ModelResponse(parts=[TextPart(content="ok")])),
             ]
         }
-    if reg.slot == "guard":
-        return {"tool_name": "read_file", "args": {"path": "README.md"}}
     if reg.slot == "before_tool_hook":
         return {"tool_name": "read_file", "args": {"path": "README.md"}}
     if reg.slot == "after_tool_hook":

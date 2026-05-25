@@ -88,8 +88,6 @@ class TestBuildAgent:
         assert "check_registrations" in seen_tools
         assert "disable_registration" in seen_tools
         assert "remove_registration" in seen_tools
-        assert "disable_tool" not in seen_tools
-        assert "register_guard" not in seen_tools
 
     def test_advanced_registration_tools_can_be_hidden(self, agent_dir):
         """Hosts can still hide high-risk policy surfaces explicitly."""
@@ -108,7 +106,6 @@ class TestBuildAgent:
         assert "register_after_run_hook" in seen_tools
         assert "register_compaction" not in seen_tools
         assert "register_tool_filter" not in seen_tools
-        assert "disable_tool" not in seen_tools
 
     def test_run_code_description_lists_all_tools(self, agent_dir):
         """The run_code tool description includes the configured sandboxed primitives."""
@@ -280,13 +277,13 @@ class TestBuildAgent:
         assert "read_file" in description
         assert "bash" in description
 
-    def test_guard_failures_are_recorded_without_crashing_agent(self, agent_dir):
-        """Broken legacy guards fail open and persist health."""
+    def test_before_tool_hook_failures_are_recorded_without_crashing_agent(self, agent_dir):
+        """Broken before-tool hooks fail open and persist health."""
         manifest = yaml.safe_load(registrations_path(agent_dir).read_text())
         manifest["registrations"].append(
             {
-                "slot": "guard",
-                "name": "broken_guard",
+                "slot": "before_tool_hook",
+                "name": "broken_before",
                 "code": "missing_name",
             }
         )
@@ -300,7 +297,7 @@ class TestBuildAgent:
                 return ModelResponse(parts=[ToolCallPart(tool_name="list_registrations", args={}, tool_call_id="tc1")])
             return ModelResponse(parts=[TextPart(content="recovered")])
 
-        result = build_agent(model=FunctionModel(scripted)).run_sync("trigger guard")
+        result = build_agent(model=FunctionModel(scripted)).run_sync("trigger before-tool hook")
 
         assert result.output == "recovered"
         manifest = yaml.safe_load(registrations_path(agent_dir).read_text())
@@ -308,13 +305,13 @@ class TestBuildAgent:
         assert reg["last_error"]
         assert reg["last_run_status"] == "error"
 
-    def test_disabled_guard_does_not_execute(self, agent_dir):
-        """Disabled guards do not participate in before_tool_execute."""
+    def test_disabled_before_tool_hook_does_not_execute(self, agent_dir):
+        """Disabled before-tool hooks do not participate in before_tool_execute."""
         manifest = yaml.safe_load(registrations_path(agent_dir).read_text())
         manifest["registrations"].append(
             {
-                "slot": "guard",
-                "name": "disabled_guard",
+                "slot": "before_tool_hook",
+                "name": "disabled_before",
                 "code": "missing_name",
                 "status": "disabled",
             }
@@ -329,10 +326,10 @@ class TestBuildAgent:
                 return ModelResponse(parts=[ToolCallPart(tool_name="list_registrations", args={}, tool_call_id="tc1")])
             return ModelResponse(parts=[TextPart(content="done")])
 
-        result = build_agent(model=FunctionModel(scripted)).run_sync("trigger disabled guard")
+        result = build_agent(model=FunctionModel(scripted)).run_sync("trigger disabled before-tool hook")
 
         assert result.output == "done"
-        reg = Manifest.load(registrations_path(agent_dir)).find("disabled_guard")
+        reg = Manifest.load(registrations_path(agent_dir)).find("disabled_before")
         assert reg is not None
         assert reg.last_run_status == "unknown"
         assert reg.last_error == ""
@@ -650,12 +647,12 @@ class TestSelfImprovementLoop:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                guard_code = '{"action": "deny", "reason": "no bash"} if tool_name == "bash" else {"action": "allow"}'
+                hook_code = '{"action": "deny", "reason": "no bash"} if tool_name == "bash" else {"action": "allow"}'
                 return ModelResponse(
                     parts=[
                         ToolCallPart(
                             tool_name="register_before_tool_hook",
-                            args={"name": "no_bash", "code": guard_code},
+                            args={"name": "no_bash", "code": hook_code},
                             tool_call_id="tc1",
                         )
                     ]
@@ -1003,14 +1000,14 @@ class TestSelfImprovementLoop:
         assert call_count == 5
         assert observed_return == "8"
 
-    def test_broken_legacy_registered_tool_retries_instead_of_crashing(self, agent_dir):
-        """Active legacy tools with bad Monty return retry feedback instead of crashing."""
+    def test_broken_registered_tool_retries_instead_of_crashing(self, agent_dir):
+        """Active tools with bad Monty return retry feedback instead of crashing."""
         manifest = yaml.safe_load(registrations_path(agent_dir).read_text())
         manifest["registrations"].append(
             {
                 "slot": "tool",
                 "name": "bad_tool",
-                "description": "A broken legacy tool.",
+                "description": "A broken tool.",
                 "code": 'import os\nos.listdir(".")',
                 "status": "active",
                 "parameters_json_schema": {

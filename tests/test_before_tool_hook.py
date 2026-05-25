@@ -1,7 +1,7 @@
 import pytest
 
 from pa.manifest import Registration
-from pa.registrations import make_guard_hook
+from pa.registrations import make_before_tool_hook
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import ToolDefinition
@@ -9,14 +9,14 @@ from unittest.mock import MagicMock
 
 
 @pytest.mark.asyncio
-async def test_guard_denies_bash():
-    """A guard that denies bash raises ModelRetry."""
+async def test_before_tool_hook_denies_bash():
+    """A before-tool hook that denies bash raises ModelRetry."""
     reg = Registration(
-        slot="guard",
+        slot="before_tool_hook",
         name="no_bash",
         code='{"action": "deny", "reason": "no bash"} if tool_name == "bash" else {"action": "allow"}',
     )
-    hook = make_guard_hook(reg)
+    hook = make_before_tool_hook(reg)
 
     ctx = MagicMock()
     call = ToolCallPart(tool_name="bash", args={"command": "rm -rf /"}, tool_call_id="test-id")
@@ -27,14 +27,14 @@ async def test_guard_denies_bash():
 
 
 @pytest.mark.asyncio
-async def test_guard_allows_read_file():
-    """A guard that only denies bash allows read_file."""
+async def test_before_tool_hook_allows_read_file():
+    """A before-tool hook that only denies bash allows read_file."""
     reg = Registration(
-        slot="guard",
+        slot="before_tool_hook",
         name="no_bash",
         code='{"action": "deny", "reason": "no bash"} if tool_name == "bash" else {"action": "allow"}',
     )
-    hook = make_guard_hook(reg)
+    hook = make_before_tool_hook(reg)
 
     ctx = MagicMock()
     call = ToolCallPart(tool_name="read_file", args={"path": "/tmp/x"}, tool_call_id="test-id")
@@ -45,14 +45,14 @@ async def test_guard_allows_read_file():
 
 
 @pytest.mark.asyncio
-async def test_guard_modifies_args():
-    """A guard that modifies args returns the modified dict."""
+async def test_before_tool_hook_modifies_args():
+    """A before-tool hook that modifies args returns the modified dict."""
     reg = Registration(
-        slot="guard",
+        slot="before_tool_hook",
         name="force_timeout",
         code='{"action": "modify", "args": {**args, "timeout_s": 5.0}}',
     )
-    hook = make_guard_hook(reg)
+    hook = make_before_tool_hook(reg)
 
     ctx = MagicMock()
     call = ToolCallPart(tool_name="bash", args={"command": "ls"}, tool_call_id="test-id")

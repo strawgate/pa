@@ -63,8 +63,6 @@ Use the smallest surface that fits the job:
 - `tool_filter`: hide CodeMode primitives from `run_code`.
 - `tool`: reusable native tool backed by Monty.
 
-Legacy `guard` registrations still work, but prefer `before_tool_hook`.
-
 ## Registered Tools
 
 Only register a tool for a proven repeatable operation. Always provide:

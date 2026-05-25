@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest
+from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, UserPromptPart
 
 # Keep at most this many message objects (≈ MAX_MESSAGES/2 turns).
 MAX_MESSAGES = 40
@@ -71,6 +71,17 @@ def save(messages: list, path: Path | str = HISTORY_PATH_DEFAULT) -> None:
     trimmed = _strip_persisted_instructions(_safe_truncate(list(messages), MAX_MESSAGES))
     raw = ModelMessagesTypeAdapter.dump_json(trimmed)
     history_path.write_bytes(raw)
+
+
+def append_user_prompt(messages: list, content: str) -> list:
+    """Return history with a pending user prompt appended."""
+    return _safe_truncate(
+        [
+            *_strip_persisted_instructions(list(messages)),
+            ModelRequest(parts=[UserPromptPart(content=content)]),
+        ],
+        MAX_MESSAGES,
+    )
 
 
 def clear(path: Path | str = HISTORY_PATH_DEFAULT) -> None:

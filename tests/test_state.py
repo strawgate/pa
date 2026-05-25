@@ -42,25 +42,23 @@ def test_resolved_state_uses_agent_and_project_identity(tmp_path, monkeypatch):
     assert state.history_path == state.state_dir / "history.json"
 
 
-def test_ensure_state_migrates_legacy_files_once(tmp_path, monkeypatch):
+def test_ensure_state_ignores_project_local_files(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PA_HOME", str(tmp_path / ".pa"))
-    (tmp_path / "agent.yaml").write_text("name: migrator\ncapabilities: []\n")
-    legacy_dir = tmp_path / "pa"
-    legacy_dir.mkdir()
-    (legacy_dir / "registrations.yaml").write_text("registrations:\n- name: old\n")
-    (legacy_dir / "history.json").write_text("[]")
+    (tmp_path / "agent.yaml").write_text("name: fresh\ncapabilities: []\n")
+    project_pa_dir = tmp_path / "pa"
+    project_pa_dir.mkdir()
+    (project_pa_dir / "registrations.yaml").write_text("registrations:\n- name: old\n")
+    (project_pa_dir / "history.json").write_text("[]")
 
     state = resolve_state(tmp_path / "agent.yaml")
     notes = ensure_state(state)
 
-    assert state.registrations_path.read_text() == "registrations:\n- name: old\n"
+    assert state.registrations_path.read_text() == "registrations: []\n"
     assert not state.history_path.exists()
-    assert state.legacy_history_archive_path.read_text() == "[]"
-    assert any("migrated" in note for note in notes)
-    assert any("archived legacy history" in note for note in notes)
+    assert notes == [f"wrote {state.registrations_path}"]
 
-    state.registrations_path.write_text("registrations: []\n")
+    state.registrations_path.write_text("registrations:\n- name: kept\n")
     ensure_state(state)
 
-    assert state.registrations_path.read_text() == "registrations: []\n"
+    assert state.registrations_path.read_text() == "registrations:\n- name: kept\n"

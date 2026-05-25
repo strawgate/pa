@@ -15,6 +15,7 @@ import pydantic_ai_harness
 import pydantic_core
 import yaml
 import httpx
+from pa.conversation import run_coro_sync, run_with_incremental_history
 from pa.runtime import build_agent
 from pa import history as _history
 from pa.manifest import Manifest
@@ -118,11 +119,10 @@ def run(
     if prior:
         console.print(f"[dim]resuming from {len(prior)} saved messages[/dim]")
     try:
-        result = agent.run_sync(prompt, message_history=prior)
+        result = run_coro_sync(lambda: run_with_incremental_history(agent, prompt, prior, state.history_path))
     except Exception as e:
         _print_error(e)
         raise typer.Exit(1)
-    _history.save(result.all_messages(), state.history_path)
     console.print(Panel(str(result.output), title="agent"))
 
 
@@ -163,12 +163,12 @@ def repl(no_history: bool = typer.Option(False, "--no-history", help="Start with
             console.print("[dim]history cleared[/dim]")
             continue
         try:
-            result = agent.run_sync(line, message_history=history)
+            result = run_coro_sync(lambda: run_with_incremental_history(agent, line, history, state.history_path))
         except Exception as e:
             _print_error(e)
+            history = _history.load(state.history_path)
             continue
         history = result.all_messages()
-        _history.save(history, state.history_path)
         console.print(Panel(str(result.output), title="agent"))
 
 

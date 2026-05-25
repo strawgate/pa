@@ -43,17 +43,11 @@ Agent-facing registration tools:
 - `disable_registration` / `remove_registration` — quarantine or remove bad
   registrations
 
-`register_guard` and `disable_tool` remain compatibility aliases, but the agent
-prompt and native tool surface prefer lifecycle names.
-
 **`complete()`** allows the agent to call its own model for sub-tasks
 (summarization, code generation, structured extraction).
 
 Registrations persist in pa's local state directory for the current project.
-Run `pa state path` to see the exact directory. Existing
-`pa/registrations.yaml` files are copied forward once for migration. Legacy
-`pa/history.json` files are archived into state but not resumed automatically
-because old saved prompts may contain stale tool and path instructions.
+Run `pa state path` to see the exact directory.
 
 For detailed registration patterns and gotchas, see
 [`docs/registrations.md`](docs/registrations.md). `pa init` also writes this
@@ -75,7 +69,7 @@ retried blindly.
   `register_instruction`, lifecycle hook registration tools, `register_compaction`,
   or `register_tool_filter`.
 - **Slot**: one of `tool`, `instruction`, `compaction`, `before_run_hook`,
-  `after_run_hook`, `before_tool_hook`, `after_tool_hook`, legacy `guard`, or `tool_filter`.
+  `after_run_hook`, `before_tool_hook`, `after_tool_hook`, or `tool_filter`.
   `compaction` is single-cardinality; the rest stack. Tool registrations have
   `draft`, `active`, or `disabled` status. Disabled registrations remain in the
   manifest but are not wired into Pydantic AI hooks or toolsets.

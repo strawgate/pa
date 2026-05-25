@@ -66,10 +66,10 @@ async def test_sandbox_isolation():
 
 
 @pytest.mark.asyncio
-async def test_guard_return_shape():
+async def test_before_tool_hook_return_shape():
     res = await execute_registration(
-        slot="guard",
-        name="test_guard",
+        slot="before_tool_hook",
+        name="test_before_tool",
         code='{"action": "allow"}',
         inputs={"tool_name": "bash", "args": {"command": "ls"}},
     )
