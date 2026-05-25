@@ -13,12 +13,12 @@ _complete_fn: Any = None
 
 
 async def read_file(*, path: str) -> str:
-    """Read a UTF-8 text file from the current local working tree. Returns its contents."""
+    """Read a UTF-8 text file at `path`. Relative paths resolve from the current working directory."""
     return Path(path).read_text(encoding="utf-8")
 
 
 async def write_file(*, path: str, content: str) -> str:
-    """Write `content` to a local working-tree file (UTF-8, overwriting). Returns a status string."""
+    """Write `content` to `path` as UTF-8, overwriting existing content. Relative paths resolve from cwd."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
@@ -26,7 +26,7 @@ async def write_file(*, path: str, content: str) -> str:
 
 
 async def list_dir(*, path: str = ".") -> list[dict[str, object]]:
-    """List one local directory level. Returns entry metadata sorted by name."""
+    """List one directory level at `path`. Relative paths resolve from the current working directory."""
     p = Path(path)
     out: list[dict[str, object]] = []
     for child in sorted(p.iterdir(), key=lambda entry: entry.name):

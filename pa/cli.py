@@ -84,6 +84,18 @@ def _ensure_config() -> PaState:
     return state
 
 
+def _resolve_existing_state() -> PaState:
+    """Resolve state for an existing project agent without writing files."""
+    agent_path = Path("agent.yaml")
+    if not agent_path.is_absolute():
+        agent_path = Path.cwd() / agent_path
+    agent_path = agent_path.resolve()
+    if not agent_path.exists():
+        console.print("[red]agent.yaml not found; run `pa init` first[/red]")
+        raise typer.Exit(1)
+    return resolve_state(agent_path)
+
+
 @app.command()
 def init() -> None:
     """Create the home default, project agent.yaml fork, docs, and local state."""
@@ -93,7 +105,7 @@ def init() -> None:
 @app.command(name="clear-history")
 def clear_history() -> None:
     """Delete the saved conversation history for this project."""
-    state = _ensure_config()
+    state = _resolve_existing_state()
     _history.clear(state.history_path)
     console.print("[green]history cleared[/green]")
 
@@ -101,7 +113,7 @@ def clear_history() -> None:
 @app.command()
 def doctor() -> None:
     """Smoke-check registrations and print their health."""
-    state = _ensure_config()
+    state = _resolve_existing_state()
     from pa.registration_tools import check_registrations_at
 
     console.print_json(json=check_registrations_at(state.registrations_path))
@@ -166,7 +178,8 @@ def repl(no_history: bool = typer.Option(False, "--no-history", help="Start with
             result = run_coro_sync(lambda: run_with_incremental_history(agent, line, history, state.history_path))
         except Exception as e:
             _print_error(e)
-            history = _history.load(state.history_path)
+            if not no_history:
+                history = _history.load(state.history_path)
             continue
         history = result.all_messages()
         console.print(Panel(str(result.output), title="agent"))
@@ -175,14 +188,14 @@ def repl(no_history: bool = typer.Option(False, "--no-history", help="Start with
 @state_app.command("path")
 def state_path() -> None:
     """Print the state directory for this project."""
-    state = _ensure_config()
+    state = _resolve_existing_state()
     console.print(str(state.state_dir))
 
 
 @state_app.command("ls")
 def state_ls() -> None:
     """Show resolved config and state paths for this project."""
-    state = _ensure_config()
+    state = _resolve_existing_state()
     console.print(f"home: {state.home}")
     console.print(f"default agent: {state.default_agent_path}")
     console.print(f"project agent: {state.agent_spec_path}")
@@ -204,7 +217,7 @@ def state_wipe(
         console.print("[red]choose --history, --registrations, or --all[/red]")
         raise typer.Exit(1)
 
-    state = _ensure_config()
+    state = _resolve_existing_state()
     target = state.state_dir if all_ else "selected state"
     if not yes and not typer.confirm(f"Wipe {target}?"):
         raise typer.Exit(1)
@@ -219,8 +232,11 @@ def state_wipe(
         _history.clear(state.history_path)
         console.print("[green]history cleared[/green]")
     if registrations:
-        Manifest().save(state.registrations_path)
-        console.print("[green]registrations reset[/green]")
+        if state.registrations_path.exists():
+            Manifest().save(state.registrations_path)
+            console.print("[green]registrations reset[/green]")
+        else:
+            console.print("[green]registrations already absent[/green]")
 
 
 def _try_logfire() -> None:

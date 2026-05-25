@@ -11,6 +11,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+import typer
 import yaml
 from pydantic_ai.messages import ModelResponse, SystemPromptPart, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel, AgentInfo
@@ -33,9 +34,7 @@ def agent_dir(tmp_path, monkeypatch):
 
 
 def registrations_path(agent_dir: Path) -> Path:
-    state = resolve_state(agent_dir / "agent.yaml")
-    ensure_state(state)
-    return state.registrations_path
+    return resolve_state(agent_dir / "agent.yaml").registrations_path
 
 
 def enable_advanced_registration_tools(agent_dir: Path) -> None:
@@ -200,6 +199,30 @@ class TestBuildAgent:
         assert "Current working directory: " + str(agent_dir) in instruction_text
         assert "Current date:" in instruction_text
         assert system_prompts == []
+
+    def test_runtime_context_uses_explicit_agent_directory(self, tmp_path, monkeypatch):
+        """Explicit agent specs inject their own project context, not process cwd."""
+        caller_dir = tmp_path / "caller"
+        project_dir = tmp_path / "project"
+        caller_dir.mkdir()
+        project_dir.mkdir()
+        monkeypatch.chdir(caller_dir)
+        template = Path(__file__).parent.parent / "pa" / "agent_template.yaml"
+        shutil.copyfile(template, project_dir / "agent.yaml")
+        (project_dir / "AGENTS.md").write_text("project-specific guidance\n")
+        instruction_text = ""
+
+        def capture_context(messages, info: AgentInfo):
+            nonlocal instruction_text
+            parts = info.model_request_parameters.instruction_parts or []
+            instruction_text = "\n".join(part.content for part in parts)
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        build_agent(project_dir / "agent.yaml", model=FunctionModel(capture_context)).run_sync("test")
+
+        assert "Current working directory: " + str(project_dir) in instruction_text
+        assert "project-specific guidance" in instruction_text
+        assert str(caller_dir) not in instruction_text
 
     def test_tool_filter_uses_native_prepare_tools(self, agent_dir):
         """tool_filter registrations filter primitives before CodeMode builds run_code."""
@@ -1154,3 +1177,26 @@ class TestCLIInit:
         init()
 
         assert (tmp_path / "agent.yaml").read_text() == "name: custom\ninstructions: hello\ncapabilities: []\n"
+
+    def test_state_path_without_agent_does_not_scaffold(self, tmp_path, monkeypatch):
+        """Read-only state inspection does not create project files."""
+        monkeypatch.chdir(tmp_path)
+        from pa.cli import state_path
+
+        with pytest.raises(typer.Exit):
+            state_path()
+
+        assert not (tmp_path / "agent.yaml").exists()
+        assert not (tmp_path / "docs").exists()
+        assert not (tmp_path / ".pa-home").exists()
+
+    def test_state_wipe_registrations_does_not_create_missing_state(self, tmp_path, monkeypatch):
+        """Cleanup commands should not materialize absent state as a side effect."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "agent.yaml").write_text("name: clean\ncapabilities: []\n")
+        from pa.cli import state_wipe
+
+        state_wipe(registrations=True, yes=True)
+
+        state = resolve_state(tmp_path / "agent.yaml")
+        assert not state.registrations_path.exists()

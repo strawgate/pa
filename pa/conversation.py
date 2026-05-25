@@ -25,7 +25,7 @@ async def run_with_incremental_history(
     history_path: Path,
 ) -> AgentRunResult[Any]:
     """Run an agent and persist conversation history after each graph step."""
-    prior = list(message_history)
+    prior = history.normalize_for_replay(list(message_history))
     history.save(history.append_user_prompt(prior, prompt), history_path)
 
     async with agent.iter(prompt, message_history=prior) as agent_run:
@@ -45,7 +45,8 @@ async def run_with_incremental_history(
         finally:
             save_current()
 
-    assert agent_run.result is not None, "The graph run did not finish properly"
+    if agent_run.result is None:
+        raise RuntimeError("The graph run did not finish properly")
     history.save(agent_run.result.all_messages(), history_path)
     return agent_run.result
 

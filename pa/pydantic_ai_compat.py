@@ -38,12 +38,15 @@ def _patch_harness_parallel_execution_mode() -> None:
 def _patch_run_sync_event_loop_warning() -> None:
     """Avoid Python 3.13's `asyncio.get_event_loop()` deprecation in run_sync()."""
     import asyncio
+    import threading
 
     import pydantic_ai._utils as utils
 
     current = utils.get_event_loop
     if getattr(current, "_pa_avoids_get_event_loop_warning", False):
         return
+
+    thread_local = threading.local()
 
     @wraps(current)
     def _compat() -> asyncio.AbstractEventLoop:
@@ -52,13 +55,13 @@ def _patch_run_sync_event_loop_warning() -> None:
         except RuntimeError:
             pass
 
-        event_loop = getattr(_compat, "_pa_event_loop", None)
+        event_loop = getattr(thread_local, "event_loop", None)
         if event_loop is not None and not event_loop.is_closed():
             return event_loop
 
         event_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(event_loop)
-        setattr(_compat, "_pa_event_loop", event_loop)
+        thread_local.event_loop = event_loop
         return event_loop
 
     setattr(_compat, "_pa_avoids_get_event_loop_warning", True)

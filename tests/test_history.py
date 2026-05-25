@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, UserPromptPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from pa.conversation import run_coro_sync, run_with_incremental_history
@@ -37,6 +37,19 @@ def test_append_user_prompt_preserves_prompt_when_run_never_starts(tmp_path):
     loaded = history.load(path)
     assert len(loaded) == 1
     assert loaded[0].parts[0].content == "please remember this"
+
+
+def test_default_history_path_uses_pa_home(tmp_path):
+    expected_path = tmp_path / ".pa-home" / "history.json"
+
+    history.clear()
+    history.save(history.append_user_prompt([], "stored in pa home"))
+
+    assert expected_path.exists()
+    loaded = history.load()
+    assert loaded[0].parts[0].content == "stored in pa home"
+
+    history.clear()
 
 
 def test_run_with_incremental_history_saves_partial_tool_progress(tmp_cwd):
@@ -72,3 +85,29 @@ def test_run_with_incremental_history_saves_partial_tool_progress(tmp_cwd):
     assert any(isinstance(part, UserPromptPart) and part.content == "calculate" for part in parts)
     assert any(getattr(part, "tool_name", None) == "run_code" for part in parts)
     assert any(getattr(part, "tool_call_id", None) == "tc1" and hasattr(part, "content") for part in parts)
+
+
+def test_run_with_incremental_history_normalizes_in_memory_replay(tmp_cwd):
+    template = Path(__file__).parent.parent / "pa" / "agent_template.yaml"
+    shutil.copyfile(template, tmp_cwd / "agent.yaml")
+    state = resolve_state(tmp_cwd / "agent.yaml")
+    ensure_state(state)
+    history_path = tmp_cwd / "history.json"
+    seen_instructions = []
+    prior = [
+        ModelRequest(
+            parts=[UserPromptPart(content="old prompt")],
+            instructions="stale dynamic instructions",
+        )
+    ]
+
+    def scripted(messages, info: AgentInfo):
+        nonlocal seen_instructions
+        seen_instructions = [message.instructions for message in messages if isinstance(message, ModelRequest)]
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    agent = build_agent(tmp_cwd / "agent.yaml", model=FunctionModel(scripted))
+
+    run_coro_sync(lambda: run_with_incremental_history(agent, "new prompt", prior, history_path))
+
+    assert "stale dynamic instructions" not in seen_instructions

@@ -144,7 +144,10 @@ def build_agent(
         model=model,
         instructions=PA_BUILTIN_INSTRUCTIONS,
         defer_model_check=model is None,
-        capabilities=[PaPrimitiveTools(), PaRuntimeContext()],
+        capabilities=[
+            PaPrimitiveTools(),
+            PaRuntimeContext(working_dir=state.working_dir, project_root=state.project_root),
+        ],
     )
 
     # Inject the completion function so `complete()` can call the same model
