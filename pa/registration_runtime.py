@@ -8,7 +8,7 @@ from typing import Any, Callable, Awaitable
 import pydantic_monty as pm
 
 from pa.manifest import MANIFEST_PATH_DEFAULT, Manifest, Registration
-from pa.monty_bridge import BridgeResult, MontyBridgeError, execute_registration
+from pa.monty_bridge import DEFAULT_LIMITS, BridgeResult, MontyBridgeError, execute_registration
 
 
 def stringify_error(e: BaseException) -> str:
@@ -38,6 +38,13 @@ class RegistrationExecutionError(Exception):
         return stringify_error(self.error)
 
 
+def limits_for_registration(reg: Registration) -> pm.ResourceLimits:
+    """Return the sandbox limits for a registration execution."""
+    if reg.slot == "tool":
+        return pm.ResourceLimits(max_duration_secs=reg.timeout_s)
+    return DEFAULT_LIMITS
+
+
 async def run_registration(
     reg: Registration,
     *,
@@ -57,7 +64,7 @@ async def run_registration(
             inputs=inputs,
             external_functions=external_functions,
             extra_stubs=extra_stubs,
-            limits=limits,
+            limits=limits or limits_for_registration(reg),
         )
     except MontyBridgeError as e:
         record_registration_result(reg, ok=False, error=stringify_error(e), manifest=manifest, path=manifest_path)

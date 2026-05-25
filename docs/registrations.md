@@ -92,6 +92,12 @@ Registered tools may call `read_file`, `write_file`, `list_dir`, `bash`,
 primitive call made inside the tool. If a registered tool is policy-sensitive,
 put the policy in the tool itself too.
 
+Tool registrations can set `timeout_s` when validation and future calls
+legitimately need more sandbox time, such as tools that call `complete`, run a
+bounded shell command, or fetch network data. The default for new tools is 10
+seconds, and the maximum is 60 seconds. Keep timeouts low for simple pure-Python
+tools.
+
 For filesystem tools, use `list_dir` plus `read_file` instead of shelling out.
 Skip sensitive and noisy paths explicitly:
 

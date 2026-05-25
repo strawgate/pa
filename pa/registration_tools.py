@@ -13,6 +13,7 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserProm
 
 from pa import primitives
 from pa.manifest import (
+    DEFAULT_REGISTERED_TOOL_TIMEOUT_S,
     MANIFEST_PATH_DEFAULT,
     CardinalityError,
     Manifest,
@@ -24,6 +25,7 @@ from pa.monty_bridge import MontyBridgeError, compile_registration, execute_regi
 from pa.registration_runtime import (
     RegistrationExecutionError,
     compaction_policy_error,
+    limits_for_registration,
     record_registration_result,
     run_registration,
     stringify_error,
@@ -85,7 +87,8 @@ Working snippets:
 - tool: `args["text"].strip().lower()` with a description, JSON schema, and
   `example_args` so it can be validated before activation. Tools can also use
   `await read_file(path=...)` and `await list_dir(path=...)` when they need
-  filesystem context.
+  filesystem context. Use `timeout_s` up to 60 seconds for legitimately slower
+  tools that call `complete`, run bounded shell commands, or fetch network data.
 
 Pydantic AI tool retries are fatal when exhausted. A validation error, denied
 tool call, bad hook result, or after-tool `retry` response counts against that
@@ -192,7 +195,8 @@ Registered tools may also await `read_file`, `write_file`, `list_dir`, `bash`,
 `http_get`, and `complete` with keyword-only arguments. Always provide
 `description`. Provide a JSON object schema and `example_args` whenever
 possible; without `example_args`, the tool is saved as a draft and is not
-callable until `validate_tool` succeeds.
+callable until `validate_tool` succeeds. Set `timeout_s` when validation and
+future calls need more than the default sandbox time; the maximum is 60 seconds.
 
 Example code: `args["text"].strip().lower()`
 """
@@ -380,6 +384,7 @@ async def _run_tool_validation(reg: Registration, example_args: dict[str, Any]) 
         inputs={"args": example_args},
         external_functions=REGISTERED_TOOL_EXTERNAL_FUNCTIONS,
         extra_stubs=REGISTERED_TOOL_EXTRA_STUBS,
+        limits=limits_for_registration(reg),
     )
     return result.value
 
@@ -394,15 +399,24 @@ def register_tool(
     code: str,
     parameters_json_schema: dict[str, Any] | None = None,
     example_args: dict[str, Any] | None = None,
+    timeout_s: float = DEFAULT_REGISTERED_TOOL_TIMEOUT_S,
 ) -> str:
     """Register a reusable Monty tool.
 
     Tools are draft-only until validated with an example argument object. Pass
     `example_args` here, or call `validate_tool(name, example_args)` later.
+    Set `timeout_s` for tools that legitimately need longer validation or
+    runtime execution. The maximum is 60 seconds.
     """
     return _run_coro_sync(
         lambda: _register_tool(
-            name, description, code, parameters_json_schema, example_args, path=MANIFEST_PATH_DEFAULT
+            name,
+            description,
+            code,
+            parameters_json_schema,
+            example_args,
+            timeout_s,
+            path=MANIFEST_PATH_DEFAULT,
         )
     )
 
@@ -413,6 +427,7 @@ async def _register_tool(
     code: str,
     parameters_json_schema: dict[str, Any] | None,
     example_args: dict[str, Any] | None,
+    timeout_s: float,
     *,
     path: Path | str,
 ) -> str:
@@ -425,6 +440,7 @@ async def _register_tool(
             code=code,
             description=description,
             parameters_json_schema=schema,
+            timeout_s=timeout_s,
             status="draft",
         )
     except Exception as e:
@@ -520,7 +536,7 @@ def _registration_summary(r: Registration) -> dict[str, Any]:
         health = "error"
     elif r.status == "draft":
         health = "draft"
-    return {
+    summary = {
         "slot": r.slot,
         "name": r.name,
         "status": r.status,
@@ -534,6 +550,9 @@ def _registration_summary(r: Registration) -> dict[str, Any]:
         "last_ok_at": r.last_ok_at,
         "last_duration_ms": r.last_duration_ms,
     }
+    if r.slot == "tool":
+        summary["timeout_s"] = r.timeout_s
+    return summary
 
 
 def _list_registrations(*, path: Path | str) -> str:
@@ -683,8 +702,17 @@ def make_registration_toolset(manifest_path: str | Path, *, include_advanced: bo
         code: str,
         parameters_json_schema: dict[str, Any] | None = None,
         example_args: dict[str, Any] | None = None,
+        timeout_s: float = DEFAULT_REGISTERED_TOOL_TIMEOUT_S,
     ) -> str:
-        return await _register_tool(name, description, code, parameters_json_schema, example_args, path=path)
+        return await _register_tool(
+            name,
+            description,
+            code,
+            parameters_json_schema,
+            example_args,
+            timeout_s,
+            path=path,
+        )
 
     async def validate_tool_bound(name: str, example_args: dict[str, Any]) -> str:
         return await _validate_tool(name, example_args, path=path)

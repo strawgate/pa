@@ -7,6 +7,7 @@ from pa.registration_tools import (
     list_registrations,
     register_instruction,
     register_tool,
+    validate_tool,
 )
 
 
@@ -75,6 +76,65 @@ async def test_register_tool_sync_wrapper_works_inside_event_loop(tmp_cwd):
     reg = Manifest.load().find("double")
     assert reg is not None
     assert reg.status == "active"
+
+
+def test_register_tool_persists_timeout(tmp_cwd):
+    result = register_tool(
+        "complete_backed",
+        "Use complete for a bounded sub-task.",
+        'args["text"].upper()',
+        {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+        {"text": "hello"},
+        timeout_s=12.0,
+    )
+
+    assert result.startswith("OK:")
+    reg = Manifest.load().find("complete_backed")
+    assert reg is not None
+    assert reg.status == "active"
+    assert reg.timeout_s == 12.0
+    listing = json.loads(list_registrations())
+    assert listing[0]["timeout_s"] == 12.0
+
+
+def test_register_tool_rejects_timeout_above_limit(tmp_cwd):
+    result = register_tool(
+        "too_slow",
+        "Timeout exceeds the registration cap.",
+        '"ok"',
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        {},
+        timeout_s=61.0,
+    )
+
+    assert result.startswith("ERROR: invalid registration:")
+    assert "less than or equal to 60" in result
+    assert Manifest.load().registrations == []
+
+
+def test_validate_tool_uses_registered_timeout(tmp_cwd):
+    result = register_tool(
+        "never_finishes",
+        "Loop forever.",
+        "x = 0\nwhile True:\n    x = x + 1\nx",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        timeout_s=0.05,
+    )
+    assert result.startswith("OK:")
+
+    result = validate_tool("never_finishes", {})
+
+    assert result.startswith("ERROR: validation failed for tool/never_finishes:")
+    reg = Manifest.load().find("never_finishes")
+    assert reg is not None
+    assert reg.status == "disabled"
+    assert reg.timeout_s == 0.05
+    assert reg.last_error
 
 
 def test_check_registrations_records_health(tmp_cwd):

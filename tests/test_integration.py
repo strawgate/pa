@@ -7,6 +7,7 @@ These tests exercise the complete pipeline:
 - Registrations persisted and loaded on next agent build
 """
 
+import json
 import shutil
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import typer
 import yaml
 from pydantic_ai.messages import ModelResponse, SystemPromptPart, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel, AgentInfo
+from typer.testing import CliRunner
 
 from pa.builtin_instructions import PA_BUILTIN_INSTRUCTIONS
 from pa.manifest import Manifest
@@ -790,6 +792,45 @@ class TestSelfImprovementLoop:
         build_agent(model=FunctionModel(capture_tools)).run_sync("next")
         assert "double" not in seen_tools
 
+    def test_register_tool_accepts_timeout(self, agent_dir):
+        """The native registration tool can persist per-tool sandbox timeouts."""
+        call_count = 0
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="register_tool",
+                            args={
+                                "name": "slow_summary",
+                                "description": "Summarize text with a slower sub-completion.",
+                                "code": 'args["text"]',
+                                "parameters_json_schema": {
+                                    "type": "object",
+                                    "properties": {"text": {"type": "string"}},
+                                    "required": ["text"],
+                                    "additionalProperties": False,
+                                },
+                                "example_args": {"text": "hello"},
+                                "timeout_s": 30.0,
+                            },
+                            tool_call_id="tc1",
+                        )
+                    ]
+                )
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        build_agent(model=FunctionModel(scripted)).run_sync("register active")
+
+        manifest = yaml.safe_load(registrations_path(agent_dir).read_text())
+        reg = manifest["registrations"][0]
+        assert reg["name"] == "slow_summary"
+        assert reg["status"] == "active"
+        assert reg["timeout_s"] == 30.0
+
     def test_registration_toolset_allows_multiple_tool_arg_repairs(self, agent_dir):
         """Registration management tools do not use a tiny retry budget."""
         assert SELF_EVOLUTION_TOOL_MAX_RETRIES == 15
@@ -1200,3 +1241,31 @@ class TestCLIInit:
 
         state = resolve_state(tmp_path / "agent.yaml")
         assert not state.registrations_path.exists()
+
+
+class TestCLIRun:
+    def test_pa_run_jsonl_outputs_structured_events(self, tmp_path, monkeypatch):
+        """pa run --jsonl emits parseable events and suppresses rich panels."""
+        monkeypatch.chdir(tmp_path)
+
+        from pa import cli
+        from pa.runtime import build_agent as real_build_agent
+
+        def scripted(messages, info: AgentInfo):
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        def fake_build_agent(agent_spec_path):
+            return real_build_agent(agent_spec_path, model=FunctionModel(scripted))
+
+        monkeypatch.setattr(cli, "build_agent", fake_build_agent)
+        monkeypatch.setattr(cli, "_try_logfire", lambda: None)
+
+        result = CliRunner().invoke(cli.app, ["run", "--jsonl", "--no-history", "say hi"])
+
+        assert result.exit_code == 0, result.output
+        payloads = [json.loads(line) for line in result.output.splitlines()]
+        event_types = [payload["type"] for payload in payloads]
+        assert "run_started" in event_types
+        assert "history_saved" in event_types
+        assert payloads[-1]["type"] == "run_completed"
+        assert payloads[-1]["output"] == "done"
