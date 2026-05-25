@@ -51,7 +51,9 @@ prompt and native tool surface prefer lifecycle names.
 
 Registrations persist in pa's local state directory for the current project.
 Run `pa state path` to see the exact directory. Existing
-`pa/registrations.yaml` files are copied forward once for migration.
+`pa/registrations.yaml` files are copied forward once for migration. Legacy
+`pa/history.json` files are archived into state but not resumed automatically
+because old saved prompts may contain stale tool and path instructions.
 
 For detailed registration patterns and gotchas, see
 [`docs/registrations.md`](docs/registrations.md). `pa init` also writes this

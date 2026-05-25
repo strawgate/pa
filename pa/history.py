@@ -7,9 +7,10 @@ their own storage.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
-from pydantic_ai.messages import ModelMessagesTypeAdapter
+from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest
 
 # Keep at most this many message objects (≈ MAX_MESSAGES/2 turns).
 MAX_MESSAGES = 40
@@ -41,6 +42,14 @@ def _safe_truncate(messages: list, max_messages: int) -> list:
     return []
 
 
+def _strip_persisted_instructions(messages: list) -> list:
+    """Remove old dynamic instructions before persisting or replaying history."""
+    return [
+        replace(msg, instructions=None) if isinstance(msg, ModelRequest) and msg.instructions is not None else msg
+        for msg in messages
+    ]
+
+
 def load(path: Path | str = HISTORY_PATH_DEFAULT) -> list:
     """Load history. Returns [] if absent or corrupt."""
     history_path = Path(path)
@@ -49,7 +58,7 @@ def load(path: Path | str = HISTORY_PATH_DEFAULT) -> list:
     try:
         raw = history_path.read_bytes()
         messages = ModelMessagesTypeAdapter.validate_json(raw)
-        return _safe_truncate(list(messages), MAX_MESSAGES)
+        return _strip_persisted_instructions(_safe_truncate(list(messages), MAX_MESSAGES))
     except Exception:
         return []
 
@@ -59,7 +68,7 @@ def save(messages: list, path: Path | str = HISTORY_PATH_DEFAULT) -> None:
     history_path = Path(path)
     history_path.parent.mkdir(parents=True, exist_ok=True)
     # Trim before saving so the file never grows unbounded
-    trimmed = _safe_truncate(list(messages), MAX_MESSAGES)
+    trimmed = _strip_persisted_instructions(_safe_truncate(list(messages), MAX_MESSAGES))
     raw = ModelMessagesTypeAdapter.dump_json(trimmed)
     history_path.write_bytes(raw)
 

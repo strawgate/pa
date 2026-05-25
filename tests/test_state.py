@@ -55,8 +55,10 @@ def test_ensure_state_migrates_legacy_files_once(tmp_path, monkeypatch):
     notes = ensure_state(state)
 
     assert state.registrations_path.read_text() == "registrations:\n- name: old\n"
-    assert state.history_path.read_text() == "[]"
+    assert not state.history_path.exists()
+    assert state.legacy_history_archive_path.read_text() == "[]"
     assert any("migrated" in note for note in notes)
+    assert any("archived legacy history" in note for note in notes)
 
     state.registrations_path.write_text("registrations: []\n")
     ensure_state(state)

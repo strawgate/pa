@@ -29,6 +29,7 @@ class PaState:
     state_dir: Path
     registrations_path: Path
     history_path: Path
+    legacy_history_archive_path: Path
     sessions_dir: Path
 
     @property
@@ -102,6 +103,7 @@ def resolve_state(agent_spec_path: Path | str = Path("agent.yaml")) -> PaState:
         state_dir=state_dir,
         registrations_path=state_dir / "registrations.yaml",
         history_path=state_dir / "history.json",
+        legacy_history_archive_path=state_dir / "legacy-history.json",
         sessions_dir=state_dir / "sessions",
     )
 
@@ -120,9 +122,9 @@ def ensure_state(state: PaState) -> list[str]:
             state.registrations_path.write_text("registrations: []\n")
             notes.append(f"wrote {state.registrations_path}")
 
-    if not state.history_path.exists() and state.legacy_history_path.exists():
-        shutil.copyfile(state.legacy_history_path, state.history_path)
-        notes.append(f"migrated {state.legacy_history_path} -> {state.history_path}")
+    if state.legacy_history_path.exists() and not state.legacy_history_archive_path.exists():
+        shutil.copyfile(state.legacy_history_path, state.legacy_history_archive_path)
+        notes.append(f"archived legacy history {state.legacy_history_path} -> {state.legacy_history_archive_path}")
 
     return notes
 

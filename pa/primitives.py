@@ -13,12 +13,12 @@ _complete_fn: Any = None
 
 
 async def read_file(*, path: str) -> str:
-    """Read a UTF-8 text file. Returns its contents."""
+    """Read a UTF-8 text file from the current local working tree. Returns its contents."""
     return Path(path).read_text(encoding="utf-8")
 
 
 async def write_file(*, path: str, content: str) -> str:
-    """Write `content` to `path` (UTF-8, overwriting). Returns a status string."""
+    """Write `content` to a local working-tree file (UTF-8, overwriting). Returns a status string."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
@@ -26,7 +26,7 @@ async def write_file(*, path: str, content: str) -> str:
 
 
 async def list_dir(*, path: str = ".") -> list[dict[str, object]]:
-    """List one directory level. Returns entry metadata sorted by name."""
+    """List one local directory level. Returns entry metadata sorted by name."""
     p = Path(path)
     out: list[dict[str, object]] = []
     for child in sorted(p.iterdir(), key=lambda entry: entry.name):
@@ -48,7 +48,7 @@ async def list_dir(*, path: str = ".") -> list[dict[str, object]]:
 
 
 async def bash(*, command: str, timeout_s: float = _DEFAULT_TIMEOUT_S) -> dict[str, object]:
-    """Run a bash command; return {'stdout', 'stderr', 'returncode'}."""
+    """Run a bash command in the current working directory; return {'stdout', 'stderr', 'returncode'}."""
     proc = await asyncio.create_subprocess_shell(
         command,
         stdout=asyncio.subprocess.PIPE,
