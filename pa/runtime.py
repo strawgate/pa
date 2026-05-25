@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import yaml
 from pydantic_ai import Agent
@@ -12,6 +12,7 @@ from pa import primitives
 from pa.builtin_instructions import PA_BUILTIN_INSTRUCTIONS
 from pa.capability import PaRegistrations
 from pa.pydantic_ai_compat import apply_pydantic_ai_v2_harness_compat
+from pa.runtime_capabilities import PaPrimitiveTools, PaRuntimeContext
 
 DEFAULT_AGENT_SPEC = Path("agent.yaml")
 
@@ -113,17 +114,6 @@ def _make_direct_provider(sdk: str, base_url: str):
         raise ValueError(f"Direct base_url not supported for sdk={sdk!r}")
 
 
-# All primitive tools and their names
-_PRIMITIVES: dict[str, Callable[..., Any]] = {
-    "read_file": primitives.read_file,
-    "write_file": primitives.write_file,
-    "list_dir": primitives.list_dir,
-    "bash": primitives.bash,
-    "http_get": primitives.http_get,
-    "complete": primitives.complete,
-}
-
-
 def build_agent(
     agent_spec_path: str | Path = DEFAULT_AGENT_SPEC,
     *,
@@ -148,14 +138,8 @@ def build_agent(
         model=model,
         instructions=PA_BUILTIN_INSTRUCTIONS,
         defer_model_check=model is None,
+        capabilities=[PaPrimitiveTools(), PaRuntimeContext()],
     )
-    # PaRegistrations.prepare_tools applies tool_filter registrations through
-    # Pydantic AI's native tool-preparation hook before CodeMode wraps these.
-    for name in _PRIMITIVES:
-        agent.tool_plain(_PRIMITIVES[name])
-
-    # Inject dynamic context: date, cwd, and optional AGENTS.md (à la pi)
-    agent.system_prompt(_build_context_prompt)
 
     # Inject the completion function so `complete()` can call the same model
     _inject_complete_fn(agent)
@@ -163,41 +147,17 @@ def build_agent(
     return agent
 
 
-def _build_context_prompt() -> str:
-    """Dynamic system prompt fragment injected at runtime.
-
-    Appended after the static instructions so it is always current.
-    Mirrors pi's pattern of injecting date + cwd last, plus project context
-    from AGENTS.md if present.
-    """
-    import datetime
-
-    date = datetime.date.today().isoformat()
-    cwd = str(Path.cwd())
-
-    parts = ["\nCurrent date: " + date, "\nCurrent working directory: " + cwd]
-
-    # Load AGENTS.md from cwd (project-specific context, like pi/Claude)
-    agents_md = Path("AGENTS.md")
-    if agents_md.exists():
-        content = agents_md.read_text(encoding="utf-8").strip()
-        if content:
-            parts.append("\n<project_context>\n" + content + "\n</project_context>")
-
-    return "".join(parts)
-
-
 def _inject_complete_fn(agent: Agent[Any, str]) -> None:
     """Wire up primitives.complete() to use a lightweight Agent for sub-completions."""
     sub_agent = Agent(
         model=agent.model,
-        system_prompt="You are a helpful assistant. Respond concisely.",
+        instructions="You are a helpful assistant. Respond concisely.",
     )
 
     async def _do_complete(prompt: str, system: str = "", data: str = "") -> str:
         a = sub_agent
         if system:
-            a = Agent(model=agent.model, system_prompt=system)
+            a = Agent(model=agent.model, instructions=system)
         user_msg = prompt
         if data:
             user_msg = prompt + "\n\n<data>\n" + data + "\n</data>"

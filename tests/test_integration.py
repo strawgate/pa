@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.messages import ModelResponse, SystemPromptPart, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel, AgentInfo
 
 from pa.builtin_instructions import PA_BUILTIN_INSTRUCTIONS
@@ -177,6 +177,26 @@ class TestBuildAgent:
 
         assert "self-evolving agent working in this project" in instruction_text
         assert PA_BUILTIN_INSTRUCTIONS.splitlines()[0] in instruction_text
+
+    def test_runtime_context_uses_dynamic_instructions(self, agent_dir):
+        """Runtime cwd/date context uses Pydantic AI instructions, not system prompts."""
+        instruction_text = ""
+        system_prompts = []
+
+        def capture_context(messages, info: AgentInfo):
+            nonlocal instruction_text, system_prompts
+            parts = info.model_request_parameters.instruction_parts or []
+            instruction_text = "\n".join(part.content for part in parts)
+            system_prompts = [
+                part.content for message in messages for part in message.parts if isinstance(part, SystemPromptPart)
+            ]
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        build_agent(model=FunctionModel(capture_context)).run_sync("test")
+
+        assert "Current working directory: " + str(agent_dir) in instruction_text
+        assert "Current date:" in instruction_text
+        assert system_prompts == []
 
     def test_tool_filter_uses_native_prepare_tools(self, agent_dir):
         """tool_filter registrations filter primitives before CodeMode builds run_code."""

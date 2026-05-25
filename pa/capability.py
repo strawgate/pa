@@ -57,12 +57,6 @@ class PaRegistrations(AbstractCapability[Any]):
                 manifest_path=self.manifest_path,
             )
 
-    @classmethod
-    def from_spec(cls, *args: Any, **kwargs: Any) -> "PaRegistrations":
-        if len(args) == 2 and not kwargs and isinstance(args[0], tuple) and isinstance(args[1], dict):
-            return cls(*args[0], **args[1])
-        return cls(*args, **kwargs)
-
     async def for_run(self, ctx: RunContext[Any]) -> "PaRegistrations":
         return type(self)(
             manifest_path=self.manifest_path,
