@@ -7,6 +7,7 @@ import typer
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.panel import Panel
+from rich.text import Text
 from rich.traceback import install as _install_rich_tracebacks
 import pydantic
 import pydantic_ai
@@ -121,7 +122,9 @@ def doctor() -> None:
 
 @app.command()
 def run(
-    prompt: str, no_history: bool = typer.Option(False, "--no-history", help="Ignore saved history for this run.")
+    prompt: str,
+    no_history: bool = typer.Option(False, "--no-history", help="Ignore saved history for this run."),
+    progress: bool = typer.Option(True, "--progress/--no-progress", help="Print compact tool call/result summaries."),
 ) -> None:
     """Run the agent once with the given prompt, resuming from saved history."""
     _try_logfire()
@@ -131,7 +134,15 @@ def run(
     if prior:
         console.print(f"[dim]resuming from {len(prior)} saved messages[/dim]")
     try:
-        result = run_coro_sync(lambda: run_with_incremental_history(agent, prompt, prior, state.history_path))
+        result = run_coro_sync(
+            lambda: run_with_incremental_history(
+                agent,
+                prompt,
+                prior,
+                state.history_path,
+                progress=_print_progress if progress else None,
+            )
+        )
     except Exception as e:
         _print_error(e)
         raise typer.Exit(1)
@@ -139,7 +150,10 @@ def run(
 
 
 @app.command()
-def repl(no_history: bool = typer.Option(False, "--no-history", help="Start with a blank history.")) -> None:
+def repl(
+    no_history: bool = typer.Option(False, "--no-history", help="Start with a blank history."),
+    progress: bool = typer.Option(True, "--progress/--no-progress", help="Print compact tool call/result summaries."),
+) -> None:
     """Interactive REPL. History is loaded from and saved to pa's local state."""
     _try_logfire()
     state = _ensure_config()
@@ -175,7 +189,15 @@ def repl(no_history: bool = typer.Option(False, "--no-history", help="Start with
             console.print("[dim]history cleared[/dim]")
             continue
         try:
-            result = run_coro_sync(lambda: run_with_incremental_history(agent, line, history, state.history_path))
+            result = run_coro_sync(
+                lambda: run_with_incremental_history(
+                    agent,
+                    line,
+                    history,
+                    state.history_path,
+                    progress=_print_progress if progress else None,
+                )
+            )
         except Exception as e:
             _print_error(e)
             if not no_history:
@@ -247,6 +269,10 @@ def _try_logfire() -> None:
         logfire.instrument_pydantic_ai()
     except ImportError:
         pass
+
+
+def _print_progress(line: str) -> None:
+    console.print(Text("  " + line, style="dim"))
 
 
 def _print_error(e: Exception) -> None:

@@ -4,10 +4,18 @@ import shutil
 from pathlib import Path
 
 import pytest
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, UserPromptPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pa.conversation import run_coro_sync, run_with_incremental_history
+from pa.conversation import run_coro_sync, run_with_incremental_history, summarize_progress
 from pa import history
 from pa.runtime import build_agent
 from pa.state import ensure_state, resolve_state
@@ -85,6 +93,77 @@ def test_run_with_incremental_history_saves_partial_tool_progress(tmp_cwd):
     assert any(isinstance(part, UserPromptPart) and part.content == "calculate" for part in parts)
     assert any(getattr(part, "tool_name", None) == "run_code" for part in parts)
     assert any(getattr(part, "tool_call_id", None) == "tc1" and hasattr(part, "content") for part in parts)
+
+
+def test_summarize_progress_describes_tool_calls_returns_and_retries():
+    messages = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="run_code",
+                    args={"code": 'result = await bash(command="pwd", timeout_s=5)\nresult'},
+                    tool_call_id="tc1",
+                )
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="run_code",
+                    content={"stdout": "/tmp/project\n", "stderr": "", "returncode": 0},
+                    tool_call_id="tc1",
+                ),
+                RetryPromptPart(tool_name="run_code", content="change approach", tool_call_id="tc2"),
+            ]
+        ),
+    ]
+
+    lines = [line for message in messages for line in summarize_progress(message)]
+
+    assert lines == [
+        '-> run_code code=result = await bash(command="pwd", timeout_s=5) result',
+        "<- run_code success: returncode=0 stdout=/tmp/project",
+        "retry run_code: change approach",
+    ]
+
+
+def test_run_with_incremental_history_emits_progress(tmp_cwd):
+    template = Path(__file__).parent.parent / "pa" / "agent_template.yaml"
+    shutil.copyfile(template, tmp_cwd / "agent.yaml")
+    state = resolve_state(tmp_cwd / "agent.yaml")
+    ensure_state(state)
+    events: list[str] = []
+    call_count = 0
+
+    def scripted(messages, info: AgentInfo):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="run_code",
+                        args={"code": "1 + 1"},
+                        tool_call_id="tc1",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    agent = build_agent(tmp_cwd / "agent.yaml", model=FunctionModel(scripted))
+
+    run_coro_sync(
+        lambda: run_with_incremental_history(
+            agent,
+            "calculate",
+            [],
+            tmp_cwd / "history.json",
+            progress=events.append,
+        )
+    )
+
+    assert any(line == "-> run_code code=1 + 1" for line in events)
+    assert any(line.startswith("<- run_code success:") for line in events)
 
 
 def test_run_with_incremental_history_normalizes_in_memory_replay(tmp_cwd):

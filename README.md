@@ -119,8 +119,10 @@ into the project by default.
 pa init                    Create the home default, project agent.yaml, docs, and state
 pa run <prompt>            Run once, resume from saved history
 pa run --no-history <p>    Run ignoring saved history
+pa run --no-progress <p>   Suppress compact tool call/result progress lines
 pa repl                    Interactive REPL (/exit, /list /health /clear)
 pa repl --no-history       Start with a blank history
+pa repl --no-progress      Suppress compact tool call/result progress lines
 pa doctor                  Smoke-check registration health
 pa clear-history           Delete saved history
 pa state path              Print this project's state directory
