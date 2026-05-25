@@ -19,6 +19,8 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 
+SUMMARY_LIMIT = 240
+
 
 @dataclass(frozen=True, kw_only=True)
 class ProgressEvent:
@@ -197,11 +199,11 @@ def summarize_value(value: Any) -> str:
         if stderr := value.get("stderr"):
             parts.append("stderr=" + clip(str(stderr)))
         if parts:
-            return " ".join(parts)
+            return clip(" ".join(parts), SUMMARY_LIMIT)
         if "body" in value:
             status = f"status={value.get('status')} " if "status" in value else ""
-            return status + "body=" + clip(str(value["body"]))
-    return clip(json_dump(value) if isinstance(value, (dict, list)) else str(value))
+            return clip(status + "body=" + str(value["body"]), SUMMARY_LIMIT)
+    return clip(json_dump(value) if isinstance(value, (dict, list)) else str(value), SUMMARY_LIMIT)
 
 
 def json_dump(value: Any) -> str:

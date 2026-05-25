@@ -259,6 +259,29 @@ def test_default_cli_renderer_hides_large_success_results():
     assert _render_tool_event(event, verbose=True).startswith("<- run_code success: # pa")
 
 
+def test_progress_value_summary_has_hard_cap():
+    event = ToolCallFinishedEvent(
+        message="",
+        tool_name="bash",
+        tool_call_id="tc1",
+        outcome="success",
+        result_summary="",
+    )
+    payload = {
+        "returncode": 1,
+        "stdout": "o" * 240,
+        "stderr": "e" * 240,
+    }
+
+    from pa.progress import summarize_value
+
+    summary = summarize_value(payload)
+
+    assert len(summary) <= 240
+    assert summary.endswith("...")
+    assert _render_tool_event(event, verbose=False) == "<- bash success"
+
+
 def test_run_with_incremental_history_normalizes_in_memory_replay(tmp_cwd):
     template = Path(__file__).parent.parent / "pa" / "agent_template.yaml"
     shutil.copyfile(template, tmp_cwd / "agent.yaml")
