@@ -16,7 +16,18 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from pa.conversation import run_coro_sync, run_with_incremental_history, summarize_progress
+from pa.cli import _render_tool_event
 from pa import history
+from pa.progress import (
+    HistorySavedEvent,
+    ProgressEvent,
+    RunCompletedEvent,
+    RunStartedEvent,
+    ToolCallFinishedEvent,
+    ToolCallStartedEvent,
+    event_to_dict,
+    event_to_json,
+)
 from pa.runtime import build_agent
 from pa.state import ensure_state, resolve_state
 
@@ -132,7 +143,7 @@ def test_run_with_incremental_history_emits_progress(tmp_cwd):
     shutil.copyfile(template, tmp_cwd / "agent.yaml")
     state = resolve_state(tmp_cwd / "agent.yaml")
     ensure_state(state)
-    events: list[str] = []
+    events: list[ProgressEvent] = []
     call_count = 0
 
     def scripted(messages, info: AgentInfo):
@@ -162,8 +173,90 @@ def test_run_with_incremental_history_emits_progress(tmp_cwd):
         )
     )
 
-    assert any(line == "-> run_code code=1 + 1" for line in events)
-    assert any(line.startswith("<- run_code success:") for line in events)
+    assert any(isinstance(event, RunStartedEvent) for event in events)
+    assert any(isinstance(event, HistorySavedEvent) for event in events)
+    assert any(isinstance(event, RunCompletedEvent) for event in events)
+    assert any(
+        isinstance(event, ToolCallStartedEvent) and event.message == "-> run_code code=1 + 1" for event in events
+    )
+    assert any(
+        isinstance(event, ToolCallFinishedEvent) and event.message.startswith("<- run_code success:")
+        for event in events
+    )
+
+
+def test_tool_result_progress_emits_before_next_model_request(tmp_cwd):
+    template = Path(__file__).parent.parent / "pa" / "agent_template.yaml"
+    shutil.copyfile(template, tmp_cwd / "agent.yaml")
+    state = resolve_state(tmp_cwd / "agent.yaml")
+    ensure_state(state)
+    timeline: list[object] = []
+    call_count = 0
+
+    def scripted(messages, info: AgentInfo):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="run_code",
+                        args={"code": "1 + 1"},
+                        tool_call_id="tc1",
+                    )
+                ]
+            )
+        timeline.append("second_model_request")
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    agent = build_agent(tmp_cwd / "agent.yaml", model=FunctionModel(scripted))
+
+    run_coro_sync(
+        lambda: run_with_incremental_history(
+            agent,
+            "calculate",
+            [],
+            tmp_cwd / "history.json",
+            progress=timeline.append,
+        )
+    )
+
+    result_index = next(i for i, item in enumerate(timeline) if isinstance(item, ToolCallFinishedEvent))
+    second_model_index = timeline.index("second_model_request")
+    assert result_index < second_model_index
+
+
+def test_progress_events_are_jsonl_serializable():
+    event = ToolCallStartedEvent(
+        message="-> bash command=pwd",
+        tool_name="bash",
+        tool_call_id="tc1",
+        args_summary="command=pwd",
+    )
+
+    payload = event_to_dict(event)
+
+    assert payload == {
+        "type": "tool_call_started",
+        "message": "-> bash command=pwd",
+        "tool_name": "bash",
+        "tool_call_id": "tc1",
+        "args_summary": "command=pwd",
+    }
+    assert event_to_json(event).startswith('{"args_summary": "command=pwd",')
+
+
+def test_default_cli_renderer_hides_large_success_results():
+    event = ToolCallFinishedEvent(
+        message="<- run_code success: # pa Self-evolving Pydantic-AI agent harness...",
+        tool_name="run_code",
+        tool_call_id="tc1",
+        outcome="success",
+        result_summary="# pa Self-evolving Pydantic-AI agent harness...",
+    )
+
+    assert _render_tool_event(event, verbose=False) == "<- run_code success"
+    assert _render_tool_event(event, verbose=True).startswith("<- run_code success: # pa")
 
 
 def test_run_with_incremental_history_normalizes_in_memory_replay(tmp_cwd):

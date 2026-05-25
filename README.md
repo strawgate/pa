@@ -24,9 +24,11 @@ pa repl          # interactive REPL with history
   from prior runs — callable directly, visible in the agent's tool list.
 
 **Self-evolution:** the agent can call
-`register_tool(name, description, code, parameters_json_schema, example_args)`
+`register_tool(name, description, code, parameters_json_schema, example_args, timeout_s=10)`
 to create a persistent tool. Tools without an example are saved as drafts.
 Only validated active tools appear as native tools on the next run.
+Use `timeout_s` for tools that legitimately need more sandbox time; it is
+capped at 60 seconds.
 
 Agent-facing registration tools:
 - `register_tool` — save a proven repeatable operation as a native tool
@@ -64,11 +66,28 @@ and after-tool `retry` responses all count toward the relevant native tool's
 budget, so broken self-evolution should be inspected or disabled rather than
 retried blindly.
 
-**Observability:** When the `logfire` package is installed, pa automatically
-instruments Pydantic AI calls for debugging and tracing.
+**Observability**
+
+**Progress events:** `pa run --jsonl` emits structured JSON lines for every
+significant event in an agent run, useful for logging and integration:
+
+```json
+{"type": "run_started", "prompt": "hello", "history_messages": 5}
+{"type": "tool_call_started", "tool_name": "run_code", "args_summary": "code=..."}
+{"type": "tool_call_finished", "tool_name": "run_code", "outcome": "success", "result_summary": "..."}
+{"type": "history_saved", "phase": "step", "messages": 7}
+{"type": "run_completed", "output": "Hello!", "history_messages": 7}
+```
+
+When the `logfire` package is installed, pa automatically instruments Pydantic AI
+calls for debugging and tracing.
 
 ## Concepts
 
+- **Progress events**: structured events emitted during agent runs. Types include
+  `run_started`, `tool_call_started`, `tool_call_finished`, `retry_requested`,
+  `history_saved`, `run_completed`, `run_failed`. Progress callbacks receive
+  typed `ProgressEvent` objects rather than plain strings.
 - **Registration**: a named Monty snippet bound to a slot. Created via
   agent-facing tools such as `register_tool`, `validate_tool`,
   `register_instruction`, lifecycle hook registration tools, `register_compaction`,
@@ -119,10 +138,13 @@ into the project by default.
 pa init                    Create the home default, project agent.yaml, docs, and state
 pa run <prompt>            Run once, resume from saved history
 pa run --no-history <p>    Run ignoring saved history
-pa run --no-progress <p>   Suppress compact tool call/result progress lines
+pa run --no-progress <p>   Suppress compact progress events
+pa run --verbose <p>       Include run lifecycle and history-save events
+pa run --jsonl <p>         Emit structured progress events as JSON lines
 pa repl                    Interactive REPL (/exit, /list /health /clear)
 pa repl --no-history       Start with a blank history
-pa repl --no-progress      Suppress compact tool call/result progress lines
+pa repl --no-progress      Suppress compact progress events
+pa repl --verbose          Include run lifecycle and history-save events
 pa doctor                  Smoke-check registration health
 pa clear-history           Delete saved history
 pa state path              Print this project's state directory

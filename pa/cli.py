@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 import shutil
 
@@ -17,6 +18,15 @@ import pydantic_core
 import yaml
 import httpx
 from pa.conversation import run_coro_sync, run_with_incremental_history
+from pa.progress import (
+    HistorySavedEvent,
+    ProgressEvent,
+    RunCompletedEvent,
+    RunFailedEvent,
+    RunStartedEvent,
+    ToolCallFinishedEvent,
+    event_to_json,
+)
 from pa.runtime import build_agent
 from pa import history as _history
 from pa.manifest import Manifest
@@ -64,24 +74,26 @@ _TEMPLATE = Path(__file__).parent / "agent_template.yaml"
 _GUIDE_TEMPLATE = Path(__file__).parent.parent / "docs" / "registrations.md"
 
 
-def _ensure_config() -> PaState:
+def _ensure_config(*, announce: bool = True) -> PaState:
     """Create the home default, project fork, docs, and state dir if needed."""
     agent_path, created_agent, default_path, created_default = ensure_project_agent(
         target_path=Path("agent.yaml"),
         template_path=_TEMPLATE,
     )
-    if created_default:
+    if announce and created_default:
         console.print(f"[green]wrote {default_path}[/green]")
-    if created_agent:
+    if announce and created_agent:
         console.print(f"[green]wrote {Path('agent.yaml')}[/green]")
     guide_path = Path("docs") / "registrations.md"
     if _GUIDE_TEMPLATE.exists() and not guide_path.exists():
         guide_path.parent.mkdir(exist_ok=True)
         shutil.copyfile(_GUIDE_TEMPLATE, guide_path)
-        console.print(f"[green]wrote {guide_path}[/green]")
+        if announce:
+            console.print(f"[green]wrote {guide_path}[/green]")
     state = resolve_state(agent_path)
     for note in ensure_state(state):
-        console.print(f"[green]{note}[/green]")
+        if announce:
+            console.print(f"[green]{note}[/green]")
     return state
 
 
@@ -124,15 +136,18 @@ def doctor() -> None:
 def run(
     prompt: str,
     no_history: bool = typer.Option(False, "--no-history", help="Ignore saved history for this run."),
-    progress: bool = typer.Option(True, "--progress/--no-progress", help="Print compact tool call/result summaries."),
+    progress: bool = typer.Option(True, "--progress/--no-progress", help="Print compact agent progress events."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Include run lifecycle and history-save events."),
+    jsonl: bool = typer.Option(False, "--jsonl", help="Emit structured progress events as JSON lines."),
 ) -> None:
     """Run the agent once with the given prompt, resuming from saved history."""
     _try_logfire()
-    state = _ensure_config()
+    state = _ensure_config(announce=not jsonl)
     agent = build_agent(state.agent_spec_path)
     prior = [] if no_history else _history.load(state.history_path)
-    if prior:
+    if prior and not jsonl:
         console.print(f"[dim]resuming from {len(prior)} saved messages[/dim]")
+    progress_renderer = _progress_renderer(progress=progress, verbose=verbose, jsonl=jsonl)
     try:
         result = run_coro_sync(
             lambda: run_with_incremental_history(
@@ -140,19 +155,22 @@ def run(
                 prompt,
                 prior,
                 state.history_path,
-                progress=_print_progress if progress else None,
+                progress=progress_renderer,
             )
         )
     except Exception as e:
-        _print_error(e)
+        if not jsonl:
+            _print_error(e)
         raise typer.Exit(1)
-    console.print(Panel(str(result.output), title="agent"))
+    if not jsonl:
+        console.print(Panel(str(result.output), title="agent"))
 
 
 @app.command()
 def repl(
     no_history: bool = typer.Option(False, "--no-history", help="Start with a blank history."),
-    progress: bool = typer.Option(True, "--progress/--no-progress", help="Print compact tool call/result summaries."),
+    progress: bool = typer.Option(True, "--progress/--no-progress", help="Print compact agent progress events."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Include run lifecycle and history-save events."),
 ) -> None:
     """Interactive REPL. History is loaded from and saved to pa's local state."""
     _try_logfire()
@@ -162,6 +180,7 @@ def repl(
     history = [] if no_history else _history.load(state.history_path)
     if history:
         console.print(f"[dim]resuming from {len(history)} saved messages[/dim]")
+    progress_renderer = _progress_renderer(progress=progress, verbose=verbose, jsonl=False)
     while True:
         try:
             line = Prompt.ask("[cyan]>[/cyan]")
@@ -195,7 +214,7 @@ def repl(
                     line,
                     history,
                     state.history_path,
-                    progress=_print_progress if progress else None,
+                    progress=progress_renderer,
                 )
             )
         except Exception as e:
@@ -271,8 +290,56 @@ def _try_logfire() -> None:
         pass
 
 
-def _print_progress(line: str) -> None:
-    console.print(Text("  " + line, style="dim"))
+def _progress_renderer(
+    *,
+    progress: bool,
+    verbose: bool,
+    jsonl: bool,
+) -> Callable[[ProgressEvent], None] | None:
+    if jsonl:
+        return _print_jsonl_progress
+    if progress:
+        return lambda event: _print_progress_event(event, verbose=verbose)
+    return None
+
+
+def _print_progress_event(event: ProgressEvent, *, verbose: bool) -> None:
+    if event.kind in {"tool_call_started", "tool_call_finished", "retry_requested"}:
+        console.print(Text("  " + _render_tool_event(event, verbose=verbose), style="dim"))
+        return
+    if not verbose:
+        return
+    if isinstance(event, RunStartedEvent):
+        message = f"run started history_messages={event.history_messages}"
+    elif isinstance(event, HistorySavedEvent):
+        message = f"history saved phase={event.phase} messages={event.messages} path={event.path}"
+    elif isinstance(event, RunCompletedEvent):
+        message = f"run completed history_messages={event.history_messages}"
+    elif isinstance(event, RunFailedEvent):
+        message = f"run failed {event.error_type}: {event.error}"
+    else:
+        message = event.message
+    console.print(Text("  " + message, style="dim"))
+
+
+def _render_tool_event(event: ProgressEvent, *, verbose: bool) -> str:
+    if verbose or not isinstance(event, ToolCallFinishedEvent):
+        return event.message
+    if event.outcome == "success":
+        return f"<- {event.tool_name} success"
+    return f"<- {event.tool_name} {event.outcome}: {_clip_for_console(event.result_summary)}"
+
+
+def _print_jsonl_progress(event: ProgressEvent) -> None:
+    console.file.write(event_to_json(event) + "\n")
+    console.file.flush()
+
+
+def _clip_for_console(value: str, limit: int = 120) -> str:
+    one_line = " ".join(value.split())
+    if len(one_line) <= limit:
+        return one_line
+    return one_line[: limit - 3] + "..."
 
 
 def _print_error(e: Exception) -> None:

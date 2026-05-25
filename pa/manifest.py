@@ -12,6 +12,10 @@ MANIFEST_PATH_DEFAULT = Path("pa") / "registrations.yaml"
 
 RegistrationStatus = Literal["draft", "active", "disabled"]
 RegistrationRunStatus = Literal["unknown", "ok", "error"]
+DEFAULT_REGISTRATION_TIMEOUT_S = 2.0
+DEFAULT_REGISTERED_TOOL_TIMEOUT_S = 10.0
+MIN_REGISTERED_TOOL_TIMEOUT_S = 0.05
+MAX_REGISTERED_TOOL_TIMEOUT_S = 60.0
 
 
 def default_tool_schema() -> dict[str, Any]:
@@ -30,6 +34,11 @@ class Registration(BaseModel):
     code: str = Field(min_length=1, max_length=8000)
     description: str = Field(default="", max_length=256)
     parameters_json_schema: dict[str, Any] = Field(default_factory=default_tool_schema)
+    timeout_s: float = Field(
+        default=DEFAULT_REGISTRATION_TIMEOUT_S,
+        ge=MIN_REGISTERED_TOOL_TIMEOUT_S,
+        le=MAX_REGISTERED_TOOL_TIMEOUT_S,
+    )
     status: RegistrationStatus = "active"
     validated_example_args: dict[str, Any] | None = None
     last_error: str = ""
