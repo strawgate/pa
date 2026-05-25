@@ -12,12 +12,12 @@ _DEFAULT_TIMEOUT_S = 30.0
 _complete_fn: Any = None
 
 
-async def read_file(path: str) -> str:
+async def read_file(*, path: str) -> str:
     """Read a UTF-8 text file. Returns its contents."""
     return Path(path).read_text(encoding="utf-8")
 
 
-async def write_file(path: str, content: str) -> str:
+async def write_file(*, path: str, content: str) -> str:
     """Write `content` to `path` (UTF-8, overwriting). Returns a status string."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -25,7 +25,29 @@ async def write_file(path: str, content: str) -> str:
     return f"wrote {len(content.encode('utf-8'))} bytes to {path}"
 
 
-async def bash(command: str, timeout_s: float = _DEFAULT_TIMEOUT_S) -> dict[str, object]:
+async def list_dir(*, path: str = ".") -> list[dict[str, object]]:
+    """List one directory level. Returns entry metadata sorted by name."""
+    p = Path(path)
+    out: list[dict[str, object]] = []
+    for child in sorted(p.iterdir(), key=lambda entry: entry.name):
+        try:
+            stat = child.stat()
+            size: int | None = stat.st_size if child.is_file() else None
+        except OSError:
+            size = None
+        out.append(
+            {
+                "name": child.name,
+                "path": str(child),
+                "is_dir": child.is_dir(),
+                "is_file": child.is_file(),
+                "size": size,
+            }
+        )
+    return out
+
+
+async def bash(*, command: str, timeout_s: float = _DEFAULT_TIMEOUT_S) -> dict[str, object]:
     """Run a bash command; return {'stdout', 'stderr', 'returncode'}."""
     proc = await asyncio.create_subprocess_shell(
         command,
@@ -44,7 +66,7 @@ async def bash(command: str, timeout_s: float = _DEFAULT_TIMEOUT_S) -> dict[str,
     }
 
 
-async def http_get(url: str, timeout_s: float = _DEFAULT_TIMEOUT_S) -> dict[str, object]:
+async def http_get(*, url: str, timeout_s: float = _DEFAULT_TIMEOUT_S) -> dict[str, object]:
     """HTTP GET. Returns {'status', 'body', 'content_type'}; body truncated to 256 KB."""
     async with httpx.AsyncClient(timeout=timeout_s) as client:
         resp = await client.get(url)
@@ -54,7 +76,7 @@ async def http_get(url: str, timeout_s: float = _DEFAULT_TIMEOUT_S) -> dict[str,
     return {"status": resp.status_code, "body": body, "content_type": resp.headers.get("content-type", "")}
 
 
-async def complete(prompt: str, system: str = "", data: str = "") -> str:
+async def complete(*, prompt: str, system: str = "", data: str = "") -> str:
     """Perform an LLM completion. Returns the model's text response.
 
     Args:

@@ -15,7 +15,9 @@ import yaml
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel, AgentInfo
 
+from pa.builtin_instructions import PA_BUILTIN_INSTRUCTIONS
 from pa.manifest import Manifest
+from pa.registration_tools import SELF_EVOLUTION_TOOL_MAX_RETRIES, check_registrations
 from pa.runtime import build_agent
 
 
@@ -103,7 +105,7 @@ class TestBuildAgent:
         assert "disable_tool" not in seen_tools
 
     def test_run_code_description_lists_all_tools(self, agent_dir):
-        """The run_code tool description includes the 5 sandboxed primitives."""
+        """The run_code tool description includes the configured sandboxed primitives."""
         description = ""
 
         def capture_desc(messages, info: AgentInfo):
@@ -119,10 +121,62 @@ class TestBuildAgent:
         for tool_name in [
             "read_file",
             "write_file",
+            "list_dir",
             "bash",
             "http_get",
         ]:
             assert tool_name in description, f"{tool_name} not found in run_code description"
+
+    def test_run_code_can_list_directories(self, agent_dir):
+        """CodeMode exposes list_dir as a sandbox primitive."""
+        call_count = 0
+        observed_return = []
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, observed_return
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="run_code",
+                            args={"code": 'entries = await list_dir(path=".")\n[e["name"] for e in entries]'},
+                            tool_call_id="tc1",
+                        )
+                    ]
+                )
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "run_code" and hasattr(part, "content"):
+                        observed_return = part.content
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("list files")
+
+        assert result.output == "done"
+        assert "agent.yaml" in observed_return
+
+    def test_agent_template_instructions_are_user_owned(self, agent_dir):
+        """pa's built-in instructions are injected by code, not copied into agent.yaml."""
+        agent_yaml = yaml.safe_load((agent_dir / "agent.yaml").read_text())
+        assert "Tool organization" not in agent_yaml["instructions"]
+        assert "Registration code is Monty" not in agent_yaml["instructions"]
+        assert "self-evolving agent working in this project" in agent_yaml["instructions"]
+
+    def test_builtin_and_user_instructions_are_both_present(self, agent_dir):
+        """build_agent layers code-owned pa guidance with user-owned template instructions."""
+        instruction_text = ""
+
+        def capture_instructions(messages, info: AgentInfo):
+            nonlocal instruction_text
+            parts = info.model_request_parameters.instruction_parts or []
+            instruction_text = "\n".join(part.content for part in parts)
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        build_agent(model=FunctionModel(capture_instructions)).run_sync("test")
+
+        assert "self-evolving agent working in this project" in instruction_text
+        assert PA_BUILTIN_INSTRUCTIONS.splitlines()[0] in instruction_text
 
     def test_tool_filter_uses_native_prepare_tools(self, agent_dir):
         """tool_filter registrations filter primitives before CodeMode builds run_code."""
@@ -148,6 +202,7 @@ class TestBuildAgent:
         agent.run_sync("test")
 
         assert "read_file" in description
+        assert "list_dir" not in description
         assert "bash" not in description
 
     def test_tool_filter_failures_are_recorded(self, agent_dir):
@@ -200,7 +255,7 @@ class TestBuildAgent:
         assert "bash" in description
 
     def test_guard_failures_are_recorded_without_crashing_agent(self, agent_dir):
-        """Broken guards retry the tool call and persist health."""
+        """Broken legacy guards fail open and persist health."""
         manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
         manifest["registrations"].append(
             {
@@ -419,6 +474,148 @@ class TestSelfImprovementLoop:
         assert result.output == "done"
         assert observed_return == "hooked result"
 
+    def test_broken_before_tool_hook_fails_open_and_records_error(self, agent_dir):
+        """Broken before-tool hooks should not brick management tools."""
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "before_tool_hook",
+                "name": "broken_before",
+                "code": "missing_name",
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        call_count = 0
+        observed_return = ""
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, observed_return
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(parts=[ToolCallPart(tool_name="list_registrations", args={}, tool_call_id="tc1")])
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "list_registrations" and hasattr(part, "content"):
+                        observed_return = str(part.content)
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("test")
+
+        assert result.output == "done"
+        assert "broken_before" in observed_return
+        assert "missing_name" in observed_return
+
+    def test_broken_after_tool_hook_fails_open_and_records_error(self, agent_dir):
+        """Broken after-tool hooks should return the original tool result."""
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "after_tool_hook",
+                "name": "broken_after",
+                "code": "missing_name",
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        call_count = 0
+        observed_return = ""
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, observed_return
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(parts=[ToolCallPart(tool_name="list_registrations", args={}, tool_call_id="tc1")])
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "list_registrations" and hasattr(part, "content"):
+                        observed_return = str(part.content)
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("test")
+
+        assert result.output == "done"
+        assert "broken_after" in observed_return
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        assert manifest["registrations"][0]["last_run_status"] == "error"
+        assert "missing_name" in manifest["registrations"][0]["last_error"]
+
+    def test_before_tool_hook_can_block_run_code_primitive_usage(self, agent_dir):
+        """Tool hooks can govern sandbox primitives by inspecting run_code."""
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "before_tool_hook",
+                "name": "block_writes",
+                "code": '{"action": "deny", "reason": "no writes"} if tool_name == "run_code" and "write_file(" in args.get("code", "") else {"action": "allow"}',
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        call_count = 0
+        retry_prompt = ""
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, retry_prompt
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="run_code",
+                            args={"code": 'await write_file(path="blocked.txt", content="nope")'},
+                            tool_call_id="tc1",
+                        )
+                    ]
+                )
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "run_code" and hasattr(part, "content"):
+                        retry_prompt = str(part.content)
+            return ModelResponse(parts=[TextPart(content="blocked")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("try a blocked write")
+
+        assert result.output == "blocked"
+        assert "no writes" in retry_prompt
+        assert not (agent_dir / "blocked.txt").exists()
+
+    def test_after_tool_hook_can_modify_run_code_result(self, agent_dir):
+        """Tool hooks can transform the native run_code result."""
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "after_tool_hook",
+                "name": "tag_nonzero",
+                "code": '{"action": "modify", "result": {**result, "pa_note": "nonzero"}} if isinstance(result, dict) and result.get("returncode", 0) != 0 else {"action": "allow"}',
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        call_count = 0
+        observed_return = {}
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, observed_return
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="run_code",
+                            args={"code": 'await bash(command="false", timeout_s=5)'},
+                            tool_call_id="tc1",
+                        )
+                    ]
+                )
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "run_code" and hasattr(part, "content"):
+                        observed_return = part.content
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("run failing command")
+
+        assert result.output == "done"
+        assert observed_return["returncode"] == 1
+        assert observed_return["pa_note"] == "nonzero"
+
     def test_register_before_tool_hook_via_run_code(self, agent_dir):
         """Model calls register_before_tool_hook as a native tool; manifest persists it."""
         call_count = 0
@@ -473,6 +670,35 @@ class TestSelfImprovementLoop:
         assert manifest["registrations"][0]["slot"] == "compaction"
         assert manifest["registrations"][0]["name"] == "keep_last"
 
+    def test_registration_management_tools_serialize_manifest_writes(self, agent_dir):
+        """Parallel registration tool calls should not corrupt the manifest."""
+        call_count = 0
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="register_instruction",
+                            args={"name": "one", "code": '"one"'},
+                            tool_call_id="tc1",
+                        ),
+                        ToolCallPart(
+                            tool_name="register_instruction",
+                            args={"name": "two", "code": '"two"'},
+                            tool_call_id="tc2",
+                        ),
+                    ]
+                )
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        build_agent(model=FunctionModel(scripted)).run_sync("register two instructions")
+
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        assert [reg["name"] for reg in manifest["registrations"]] == ["one", "two"]
+
     def test_register_tool_without_example_is_draft(self, agent_dir):
         """register_tool without example args saves a non-callable draft."""
         call_count = 0
@@ -517,6 +743,64 @@ class TestSelfImprovementLoop:
 
         build_agent(model=FunctionModel(capture_tools)).run_sync("next")
         assert "double" not in seen_tools
+
+    def test_registration_toolset_allows_multiple_tool_arg_repairs(self, agent_dir):
+        """Registration management tools do not use a tiny retry budget."""
+        assert SELF_EVOLUTION_TOOL_MAX_RETRIES == 15
+        call_count = 0
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count
+            call_count += 1
+            if call_count in (1, 2, 3):
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="register_tool",
+                            args={
+                                "name": "double",
+                                "code": 'args["x"] * 2',
+                                "parameters_json_schema": {
+                                    "type": "object",
+                                    "properties": {"x": {"type": "integer"}},
+                                    "required": ["x"],
+                                    "additionalProperties": False,
+                                },
+                                "example_args": {"x": 2},
+                            },
+                            tool_call_id=f"tc{call_count}",
+                        )
+                    ]
+                )
+            if call_count == 4:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="register_tool",
+                            args={
+                                "name": "double",
+                                "description": "Double an integer.",
+                                "code": 'args["x"] * 2',
+                                "parameters_json_schema": {
+                                    "type": "object",
+                                    "properties": {"x": {"type": "integer"}},
+                                    "required": ["x"],
+                                    "additionalProperties": False,
+                                },
+                                "example_args": {"x": 2},
+                            },
+                            tool_call_id="tc4",
+                        )
+                    ]
+                )
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        build_agent(model=FunctionModel(scripted)).run_sync("register active")
+
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        assert call_count == 5
+        assert manifest["registrations"][0]["name"] == "double"
+        assert manifest["registrations"][0]["status"] == "active"
 
     def test_validated_registered_tool_is_native_with_schema(self, agent_dir):
         """Validated tools are exposed as native tools with their declared schema."""
@@ -577,6 +861,121 @@ class TestSelfImprovementLoop:
         assert result.output == "done"
         assert tool_schema["properties"]["x"]["type"] == "integer"
         assert observed_return == "6"
+
+    def test_registered_tool_can_use_filesystem_primitives(self, agent_dir):
+        """Registered Monty tools can call list_dir and read_file directly."""
+        (agent_dir / "notes.txt").write_text("alpha\nneedle\n", encoding="utf-8")
+        (agent_dir / ".env").write_text("needle=secret\n", encoding="utf-8")
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "tool",
+                "name": "one_level_grep",
+                "description": "Search text files in one directory level, skipping .env.",
+                "code": (
+                    'pattern = args["pattern"]\n'
+                    "matches = []\n"
+                    'for entry in await list_dir(path=args.get("path", ".")):\n'
+                    '    if entry["is_file"] and entry["name"] != ".env":\n'
+                    '        text = await read_file(path=entry["path"])\n'
+                    "        lines = text.splitlines()\n"
+                    "        for line_no, line in enumerate(lines, 1):\n"
+                    "            if pattern in line:\n"
+                    "                matches.append(f\"{entry['name']}:{line_no}:{line}\")\n"
+                    "matches"
+                ),
+                "parameters_json_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}, "pattern": {"type": "string"}},
+                    "required": ["pattern"],
+                    "additionalProperties": False,
+                },
+                "status": "active",
+                "validated_example_args": {"path": ".", "pattern": "needle"},
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        call_count = 0
+        observed_return = ""
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, observed_return
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="one_level_grep",
+                            args={"path": ".", "pattern": "needle"},
+                            tool_call_id="tc1",
+                        )
+                    ]
+                )
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "one_level_grep" and hasattr(part, "content"):
+                        observed_return = str(part.content)
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("search files")
+
+        assert result.output == "done"
+        assert "notes.txt:2:needle" in observed_return
+        assert ".env" not in observed_return
+        health = check_registrations()
+        assert '"name": "one_level_grep"' in health
+        assert '"check": "ok"' in health
+
+    def test_registered_tools_allow_multiple_arg_repairs(self, agent_dir):
+        """Active registered tools share the self-evolution retry budget."""
+        assert SELF_EVOLUTION_TOOL_MAX_RETRIES == 15
+        manifest = yaml.safe_load((agent_dir / "pa" / "registrations.yaml").read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "tool",
+                "name": "double",
+                "description": "Double an integer.",
+                "code": 'args["x"] * 2',
+                "parameters_json_schema": {
+                    "type": "object",
+                    "properties": {"x": {"type": "integer"}},
+                    "required": ["x"],
+                    "additionalProperties": False,
+                },
+                "status": "active",
+                "validated_example_args": {"x": 2},
+            }
+        )
+        (agent_dir / "pa" / "registrations.yaml").write_text(yaml.safe_dump(manifest))
+        call_count = 0
+        observed_return = ""
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, observed_return
+            call_count += 1
+            if call_count in (1, 2, 3):
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="double",
+                            args={"x": "not-an-integer"},
+                            tool_call_id=f"tc{call_count}",
+                        )
+                    ]
+                )
+            if call_count == 4:
+                return ModelResponse(parts=[ToolCallPart(tool_name="double", args={"x": 4}, tool_call_id="tc4")])
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "double" and hasattr(part, "content"):
+                        observed_return = str(part.content)
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("use double")
+
+        assert result.output == "done"
+        assert call_count == 5
+        assert observed_return == "8"
 
     def test_broken_legacy_registered_tool_retries_instead_of_crashing(self, agent_dir):
         """Active legacy tools with bad Monty return retry feedback instead of crashing."""
@@ -686,7 +1085,7 @@ class TestSelfImprovementLoop:
 
 class TestCLIInit:
     def test_pa_init_creates_files(self, tmp_path, monkeypatch):
-        """pa init creates agent.yaml and pa/registrations.yaml."""
+        """pa init creates agent.yaml, pa/registrations.yaml, and agent-readable docs."""
         monkeypatch.chdir(tmp_path)
         from pa.cli import init
 
@@ -694,6 +1093,9 @@ class TestCLIInit:
 
         assert (tmp_path / "agent.yaml").exists()
         assert (tmp_path / "pa" / "registrations.yaml").exists()
+        guide = tmp_path / "docs" / "registrations.md"
+        assert guide.exists()
+        assert "Registration Guide" in guide.read_text()
 
         # Validate agent.yaml is parseable
         agent_yaml = yaml.safe_load((tmp_path / "agent.yaml").read_text())
@@ -709,6 +1111,8 @@ class TestCLIInit:
         init()
         # Modify agent.yaml
         (tmp_path / "agent.yaml").write_text("model: test\n")
+        (tmp_path / "docs" / "registrations.md").write_text("custom guide\n")
         init()
         # Should not have been overwritten
         assert (tmp_path / "agent.yaml").read_text() == "model: test\n"
+        assert (tmp_path / "docs" / "registrations.md").read_text() == "custom guide\n"

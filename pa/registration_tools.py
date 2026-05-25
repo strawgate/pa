@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -11,6 +11,7 @@ from pydantic_ai.toolsets import FunctionToolset
 from pydantic_core import to_jsonable_python
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
+from pa import primitives
 from pa.manifest import (
     MANIFEST_PATH_DEFAULT,
     CardinalityError,
@@ -38,13 +39,71 @@ _SCALAR_JSON_TYPES = {
     "array": list,
 }
 
+SELF_EVOLUTION_TOOL_MAX_RETRIES = 15
+
+REGISTERED_TOOL_EXTERNAL_FUNCTIONS: dict[str, Callable[..., Awaitable[Any] | Any]] = {
+    "read_file": primitives.read_file,
+    "write_file": primitives.write_file,
+    "list_dir": primitives.list_dir,
+    "bash": primitives.bash,
+    "http_get": primitives.http_get,
+    "complete": primitives.complete,
+}
+
+REGISTERED_TOOL_EXTRA_STUBS = """\
+async def read_file(*, path: str) -> str: ...
+async def write_file(*, path: str, content: str) -> str: ...
+async def list_dir(*, path: str = ".") -> list[dict[str, Any]]: ...
+async def bash(*, command: str, timeout_s: float = 30.0) -> dict[str, Any]: ...
+async def http_get(*, url: str, timeout_s: float = 30.0) -> dict[str, Any]: ...
+async def complete(*, prompt: str, system: str = "", data: str = "") -> str: ...
+"""
+
+_REGISTRATION_TOOLSET_INSTRUCTIONS = """\
+Registration code is Monty Python. Inputs are injected as variables and the
+registration returns the value of the final expression. Do not wrap snippets in
+`def ...` and do not use a top-level `return`.
+
+Native tool hooks see Pydantic AI tool calls such as `run_code`,
+`register_tool`, `list_registrations`, and active registered tools. Sandboxed
+primitives (`read_file`, `write_file`, `list_dir`, `bash`, `http_get`,
+`complete`) run inside the native `run_code` tool. Registered tools may also
+call these primitives from Monty. To govern primitives, inspect
+`tool_name == "run_code"` / registered tool arguments, or use
+`register_tool_filter` to hide primitives before CodeMode exposes `run_code`.
+Tool hooks see the outer registered tool call, not each primitive call made
+inside that registered tool, so sensitive registered tools should enforce their
+own skip rules too.
+
+Working snippets:
+- instruction: `"Call check_registrations after changing registrations."`
+- before_run_hook: `"Checklist: inspect registration health before editing."`
+- before_tool_hook: `{"action": "deny", "reason": "no writes"} if tool_name == "run_code" and "write_file(" in args.get("code", "") else {"action": "allow"}`
+- after_tool_hook: `{"action": "modify", "result": {**result, "pa_note": "nonzero return"}} if isinstance(result, dict) and result.get("returncode", 0) != 0 else {"action": "allow"}`
+- compaction: `list(range(max(0, len(messages) - 8), len(messages)))`
+- tool_filter: `[name for name in tool_names if name != "bash"]`
+- tool: `args["text"].strip().lower()` with a description, JSON schema, and
+  `example_args` so it can be validated before activation. Tools can also use
+  `await read_file(path=...)` and `await list_dir(path=...)` when they need
+  filesystem context.
+
+Pydantic AI tool retries are fatal when exhausted. A validation error, denied
+tool call, bad hook result, or after-tool `retry` response counts against that
+tool's retry budget. If a call fails repeatedly, change strategy, inspect
+registrations, or disable the broken registration instead of burning the budget.
+
+After adding or changing registrations, call `check_registrations()`.
+"""
+
 _DESC_REGISTER_INSTRUCTION = """\
 Register durable guidance that is injected into future model requests.
 
 Use when you learned a lasting user preference, project convention, workflow rule,
 or reminder that should shape future reasoning. The Monty code receives
-`ctx_summary: dict` and must return a string. Do not use this for one-off facts
-that only matter in the current answer.
+`ctx_summary: dict` and must return a string as its final expression. Do not use
+this for one-off facts that only matter in the current answer.
+
+Example code: `"Always call check_registrations after registration changes."`
 """
 
 _DESC_REGISTER_BEFORE_RUN_HOOK = """\
@@ -52,8 +111,10 @@ Register a hook that runs once at the start of each future agent run.
 
 Use for run-local setup or reminders, such as checking project state, surfacing an
 active checklist, or choosing a working mode. The Monty code receives
-`ctx_summary: dict` and must return a string. That string is injected as
-run-local guidance for the model request.
+`ctx_summary: dict` and must return a string as its final expression. That
+string is injected as run-local guidance for the model request.
+
+Example code: `"Checklist: call check_registrations before editing registrations."`
 """
 
 _DESC_REGISTER_AFTER_RUN_HOOK = """\
@@ -62,26 +123,40 @@ Register a hook that runs once after each future agent run completes.
 Use for end-of-run policy such as normalizing final output, adding a required
 signoff, or preserving a lightweight summary. The Monty code receives
 `ctx_summary: dict` and `output`, and must return `{"action": "allow"}` or
-`{"action": "replace_output", "output": str}`.
+`{"action": "replace_output", "output": str}` as its final expression.
+
+Example code: `{"action": "allow"}`
 """
 
 _DESC_REGISTER_BEFORE_TOOL_HOOK = """\
 Register a hook that runs before every future tool call.
 
 Use to enforce durable tool-call policy: block risky commands, prevent writes
-outside the repo, force timeouts, or normalize arguments. The Monty code receives
-`tool_name: str` and `args: dict`, and must return `{"action": "allow"}`,
-`{"action": "deny", "reason": str}`, or `{"action": "modify", "args": dict}`.
+outside the repo, or normalize arguments. This hook sees native Pydantic AI tool
+calls; sandboxed primitives such as `bash` are inside `run_code`, so inspect the
+`run_code` code string or use `register_tool_filter` to hide primitives. The
+Monty code receives `tool_name: str` and `args: dict`, and must return
+`{"action": "allow"}`, `{"action": "deny", "reason": str}`, or
+`{"action": "modify", "args": dict}` as its final expression.
+
+Example code: `{"action": "deny", "reason": "no writes"} if tool_name == "run_code" and "write_file(" in args.get("code", "") else {"action": "allow"}`
 """
 
 _DESC_REGISTER_AFTER_TOOL_HOOK = """\
 Register a hook that runs after every future tool call.
 
 Use to enforce durable result policy: redact secrets, truncate noisy output,
-rewrite confusing failures, or ask the model to retry a bad call. The Monty code
-receives `tool_name: str`, `args: dict`, and `result`, and must return
+rewrite confusing failures, or ask the model to retry a bad call. This hook sees
+native Pydantic AI tool results; if `run_code` returns a primitive result, that
+result is visible as the `run_code` result. The Monty code receives
+`tool_name: str`, `args: dict`, and `result`, and must return
 `{"action": "allow"}`, `{"action": "modify", "result": Any}`, or
-`{"action": "retry", "reason": str}`.
+`{"action": "retry", "reason": str}` as its final expression.
+
+Use `retry` sparingly: each retry consumes the native tool retry budget, and
+exhausting that budget aborts the whole agent run.
+
+Example code: `{"action": "modify", "result": {**result, "pa_note": "nonzero return"}} if isinstance(result, dict) and result.get("returncode", 0) != 0 else {"action": "allow"}`
 """
 
 _DESC_REGISTER_COMPACTION = """\
@@ -89,8 +164,11 @@ Register the single history-compaction hook for future model requests.
 
 Use when conversation history needs a durable retention policy. The Monty code
 receives `messages: list[dict]` and must return a list of message indices to
-keep. pa repairs unsafe output, but a bad compaction can still make future runs
-less useful, so call `check_registrations()` after registering.
+keep as its final expression. pa repairs unsafe output, but a bad compaction can
+still make future runs less useful, so call `check_registrations()` after
+registering.
+
+Example code: `list(range(max(0, len(messages) - 8), len(messages)))`
 """
 
 _DESC_REGISTER_TOOL_FILTER = """\
@@ -98,17 +176,25 @@ Register a hook that filters primitive tools before CodeMode exposes run_code.
 
 Use to apply durable capability policy, such as read-only mode or hiding network
 access. The Monty code receives `tool_names: list[str]` and must return the
-subset to keep. Tool filters can hide capabilities from future runs, so prefer
-clear names and call `check_registrations()` after registering.
+subset to keep as its final expression. Tool filters can hide capabilities from
+future runs, so prefer clear names and call `check_registrations()` after
+registering.
+
+Example code: `[name for name in tool_names if name != "bash"]`
 """
 
 _DESC_REGISTER_TOOL = """\
 Register a reusable native tool backed by a Monty snippet.
 
 Use only after proving a repeatable operation in `run_code`. The code receives
-`args: dict` and returns any JSON-serializable value. Provide a JSON object
-schema and `example_args` whenever possible; without `example_args`, the tool is
-saved as a draft and is not callable until `validate_tool` succeeds.
+`args: dict` and returns any JSON-serializable value as its final expression.
+Registered tools may also await `read_file`, `write_file`, `list_dir`, `bash`,
+`http_get`, and `complete` with keyword-only arguments. Always provide
+`description`. Provide a JSON object schema and `example_args` whenever
+possible; without `example_args`, the tool is saved as a draft and is not
+callable until `validate_tool` succeeds.
+
+Example code: `args["text"].strip().lower()`
 """
 
 _DESC_VALIDATE_TOOL = """\
@@ -298,6 +384,8 @@ async def _run_tool_validation(reg: Registration, example_args: dict[str, Any]) 
         name=reg.name,
         code=reg.code,
         inputs={"args": example_args},
+        external_functions=REGISTERED_TOOL_EXTERNAL_FUNCTIONS,
+        extra_stubs=REGISTERED_TOOL_EXTRA_STUBS,
     )
     return result.value
 
@@ -336,7 +424,7 @@ async def _register_tool(
 ) -> str:
     try:
         schema = _normalize_tool_schema(parameters_json_schema)
-        compile_registration(slot="tool", name=name, code=code)
+        compile_registration(slot="tool", name=name, code=code, extra_stubs=REGISTERED_TOOL_EXTRA_STUBS)
         reg = Registration(
             slot="tool",
             name=name,
@@ -492,7 +580,16 @@ async def _check_registrations(*, path: Path | str) -> str:
             try:
                 if reg.slot == "tool":
                     validate_args_against_schema(reg.parameters_json_schema, inputs["args"])
-                result = await run_registration(reg, inputs=inputs, manifest=m, manifest_path=path)
+                    result = await run_registration(
+                        reg,
+                        inputs=inputs,
+                        manifest=m,
+                        manifest_path=path,
+                        external_functions=REGISTERED_TOOL_EXTERNAL_FUNCTIONS,
+                        extra_stubs=REGISTERED_TOOL_EXTRA_STUBS,
+                    )
+                else:
+                    result = await run_registration(reg, inputs=inputs, manifest=m, manifest_path=path)
                 policy_error = ""
                 if reg.slot == "compaction":
                     policy_error = compaction_policy_error(result.value, len(inputs["messages"]))
@@ -538,7 +635,7 @@ def _smoke_inputs(reg: Registration) -> dict[str, Any] | None:
     if reg.slot == "after_run_hook":
         return {"ctx_summary": {"agent_name": "pa-doctor", "run_step": 0}, "output": "health check"}
     if reg.slot == "tool_filter":
-        return {"tool_names": ["read_file", "write_file", "bash", "http_get", "complete"]}
+        return {"tool_names": ["read_file", "write_file", "list_dir", "bash", "http_get", "complete"]}
     if reg.slot == "tool":
         if reg.validated_example_args is not None:
             return {"args": reg.validated_example_args}
@@ -565,7 +662,12 @@ def _remove_registration(name: str, *, path: Path | str) -> str:
 
 def make_registration_toolset(manifest_path: str | Path, *, include_advanced: bool = True) -> FunctionToolset[Any]:
     """Create native registration-management tools bound to a manifest path."""
-    toolset: FunctionToolset[Any] = FunctionToolset(id="pa-registration-management")
+    toolset: FunctionToolset[Any] = FunctionToolset(
+        id="pa-registration-management",
+        max_retries=SELF_EVOLUTION_TOOL_MAX_RETRIES,
+        sequential=True,
+        instructions=_REGISTRATION_TOOLSET_INSTRUCTIONS,
+    )
     path = Path(manifest_path)
 
     def register_instruction_bound(name: str, code: str) -> str:

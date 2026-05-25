@@ -17,7 +17,12 @@ from pa.registration_runtime import (
     record_registration_result,
     run_registration,
 )
-from pa.registration_tools import validate_args_against_schema
+from pa.registration_tools import (
+    REGISTERED_TOOL_EXTRA_STUBS,
+    REGISTERED_TOOL_EXTERNAL_FUNCTIONS,
+    SELF_EVOLUTION_TOOL_MAX_RETRIES,
+    validate_args_against_schema,
+)
 
 
 def make_before_run_hook(reg: Registration, *, manifest: Manifest | None = None, manifest_path: str = ""):
@@ -139,8 +144,8 @@ def make_before_tool_hook(reg: Registration, *, manifest: Manifest | None = None
                 manifest=manifest,
                 manifest_path=manifest_path,
             )
-        except RegistrationExecutionError as e:
-            raise ModelRetry(f"before_tool_hook {reg.name!r} crashed: {e}") from e
+        except RegistrationExecutionError:
+            return args
         action = res.value["action"]
         if action == "allow":
             return args
@@ -179,8 +184,8 @@ def make_after_tool_hook(reg: Registration, *, manifest: Manifest | None = None,
                 manifest=manifest,
                 manifest_path=manifest_path,
             )
-        except RegistrationExecutionError as e:
-            raise ModelRetry(f"after_tool_hook {reg.name!r} crashed: {e}") from e
+        except RegistrationExecutionError:
+            return result
         action = res.value["action"]
         if action == "allow":
             return result
@@ -197,7 +202,10 @@ def make_after_tool_hook(reg: Registration, *, manifest: Manifest | None = None,
 
 def make_registered_toolset(manifest: Manifest, *, manifest_path: str = "") -> FunctionToolset[Any]:
     """Create native Pydantic AI tools for active tool registrations."""
-    toolset: FunctionToolset[Any] = FunctionToolset(id="pa-registered-tools", max_retries=2)
+    toolset: FunctionToolset[Any] = FunctionToolset(
+        id="pa-registered-tools",
+        max_retries=SELF_EVOLUTION_TOOL_MAX_RETRIES,
+    )
 
     for reg in manifest.active_by_slot("tool"):
         toolset.add_tool(_make_registered_tool(reg, manifest=manifest, manifest_path=manifest_path))
@@ -213,6 +221,8 @@ def _make_registered_tool(reg: Registration, *, manifest: Manifest, manifest_pat
                 inputs={"args": kwargs},
                 manifest=manifest,
                 manifest_path=manifest_path,
+                external_functions=REGISTERED_TOOL_EXTERNAL_FUNCTIONS,
+                extra_stubs=REGISTERED_TOOL_EXTRA_STUBS,
             )
         except RegistrationExecutionError as e:
             raise ModelRetry(f"registered tool {reg.name!r} failed: {e}") from e

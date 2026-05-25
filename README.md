@@ -16,7 +16,7 @@ pa repl          # interactive REPL with history
 
 **Two-tier tool architecture:**
 - **Sandboxed primitives** (`run_code`): `read_file`, `write_file`, `bash`,
-  `http_get`, `complete` — available as async functions inside a Monty
+  `list_dir`, `http_get`, `complete` — available as async functions inside a Monty
   sandbox. State persists between calls (REPL-style).
 - **Native tools**: registration functions and user-defined tools registered
   from prior runs — callable directly, visible in the agent's tool list.
@@ -51,6 +51,19 @@ prompt and native tool surface prefer lifecycle names.
 
 All registrations persist in `pa/registrations.yaml`.
 
+For detailed registration patterns and gotchas, see
+[`docs/registrations.md`](docs/registrations.md). `pa init` also writes this
+guide into new projects so the agent can read it with
+`read_file(path="docs/registrations.md")`.
+
+**Retry budgets:** Pydantic AI raises `UnexpectedModelBehavior` and aborts the
+current agent run when a tool exhausts its retry budget. pa configures
+`run_code`, registration-management tools, and active registered tools with a
+budget of 15 retries. Schema validation errors, hook denials, bad hook outputs,
+and after-tool `retry` responses all count toward the relevant native tool's
+budget, so broken self-evolution should be inspected or disabled rather than
+retried blindly.
+
 ## Concepts
 
 - **Registration**: a named Monty snippet bound to a slot. Created via
@@ -62,9 +75,11 @@ All registrations persist in `pa/registrations.yaml`.
   `compaction` is single-cardinality; the rest stack. Tool registrations have
   `draft`, `active`, or `disabled` status. Disabled registrations remain in the
   manifest but are not wired into Pydantic AI hooks or toolsets.
-- **Primitives**: `read_file`, `write_file`, `bash`, `http_get`, `complete`.
-  Sandboxed inside `run_code` via Monty. The `tools` list in `agent.yaml`
-  controls which primitives are sandboxed.
+- **Primitives**: `read_file`, `write_file`, `list_dir`, `bash`, `http_get`,
+  `complete`. Sandboxed inside `run_code` via Monty. The `tools` list in
+  `agent.yaml` controls which primitives are sandboxed. Registered Monty tools
+  can also call these primitives directly; lifecycle hooks see the outer
+  registered tool call rather than each inner primitive call.
 
 ## Configuration
 
@@ -77,7 +92,7 @@ base_url: https://api.minimax.io/anthropic     # optional direct provider
 instructions: |
   You are pa — a self-evolving agent …
 capabilities:
-  - CodeMode: {max_retries: 15, tools: [read_file, write_file, bash, http_get, complete]}
+  - CodeMode: {max_retries: 15, tools: [read_file, write_file, list_dir, bash, http_get, complete]}
   - PaRegistrations: {}
 ```
 
