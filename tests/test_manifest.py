@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from pa.manifest import Manifest, Registration, ManifestError, CardinalityError
+from pa.manifest import DEFAULT_REGISTERED_TOOL_TIMEOUT_S, Manifest, Registration, ManifestError, CardinalityError
 
 
 class TestManifestRoundTrip:
@@ -32,6 +32,11 @@ class TestManifestRoundTrip:
         active = m.active_by_slot("instruction")
 
         assert [r.name for r in active] == ["active_note"]
+
+    def test_tool_timeout_default_matches_registration_api(self):
+        reg = Registration(slot="tool", name="default_timeout", code='"ok"')
+
+        assert reg.timeout_s == DEFAULT_REGISTERED_TOOL_TIMEOUT_S
 
     def test_two_compaction_raises_cardinality_error(self, tmp_cwd):
         m = Manifest()
