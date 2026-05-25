@@ -1,10 +1,8 @@
-"""Persistent per-project conversation history.
+"""Persistent conversation history.
 
-History is stored in ``pa/history.json`` in the current working directory
-(same location as ``pa/registrations.yaml``).  On each ``pa run`` the last
-``MAX_MESSAGES`` messages are loaded, passed as ``message_history`` to the
-agent, and the updated history is written back after the run.  This gives the
-agent memory of recent work without unbounded growth.
+The CLI stores history in pa's resolved state directory under ``~/.pa`` by
+default. The path remains injectable so tests and low-level callers can use
+their own storage.
 """
 
 from __future__ import annotations
@@ -16,7 +14,7 @@ from pydantic_ai.messages import ModelMessagesTypeAdapter
 # Keep at most this many message objects (≈ MAX_MESSAGES/2 turns).
 MAX_MESSAGES = 40
 
-_HISTORY_PATH = Path("pa") / "history.json"
+HISTORY_PATH_DEFAULT = Path("pa") / "history.json"
 
 
 def _safe_truncate(messages: list, max_messages: int) -> list:
@@ -43,28 +41,31 @@ def _safe_truncate(messages: list, max_messages: int) -> list:
     return []
 
 
-def load() -> list:
-    """Load history from pa/history.json. Returns [] if absent or corrupt."""
-    if not _HISTORY_PATH.exists():
+def load(path: Path | str = HISTORY_PATH_DEFAULT) -> list:
+    """Load history. Returns [] if absent or corrupt."""
+    history_path = Path(path)
+    if not history_path.exists():
         return []
     try:
-        raw = _HISTORY_PATH.read_bytes()
+        raw = history_path.read_bytes()
         messages = ModelMessagesTypeAdapter.validate_json(raw)
         return _safe_truncate(list(messages), MAX_MESSAGES)
     except Exception:
         return []
 
 
-def save(messages: list) -> None:
-    """Serialize and write messages to pa/history.json."""
-    _HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+def save(messages: list, path: Path | str = HISTORY_PATH_DEFAULT) -> None:
+    """Serialize and write messages."""
+    history_path = Path(path)
+    history_path.parent.mkdir(parents=True, exist_ok=True)
     # Trim before saving so the file never grows unbounded
     trimmed = _safe_truncate(list(messages), MAX_MESSAGES)
     raw = ModelMessagesTypeAdapter.dump_json(trimmed)
-    _HISTORY_PATH.write_bytes(raw)
+    history_path.write_bytes(raw)
 
 
-def clear() -> None:
+def clear(path: Path | str = HISTORY_PATH_DEFAULT) -> None:
     """Delete the history file."""
-    if _HISTORY_PATH.exists():
-        _HISTORY_PATH.unlink()
+    history_path = Path(path)
+    if history_path.exists():
+        history_path.unlink()

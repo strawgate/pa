@@ -11,8 +11,10 @@ pa has two execution surfaces:
 - `run_code`: a native Pydantic AI tool that runs Monty code with sandboxed
   primitives such as `read_file`, `write_file`, `list_dir`, `bash`, `http_get`,
   and `complete`.
-- Registrations: persistent Monty snippets in `pa/registrations.yaml`. Some
-  become native tools, and others become lifecycle hooks or prompt guidance.
+- Registrations: persistent Monty snippets in pa's project state directory.
+  Run `pa state path` if you need to inspect the exact file. Some
+  registrations become native tools, and others become lifecycle hooks or
+  prompt guidance.
 
 Registration management tools are native tools. Call `register_tool`,
 `register_before_tool_hook`, `check_registrations`, and friends directly. Do not

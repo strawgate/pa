@@ -210,7 +210,7 @@ Disable any registration without deleting its source.
 
 Use to quarantine broken, risky, or no-longer-wanted self-evolution behavior
 while keeping the code available for inspection or repair. Disabled
-registrations stay in `pa/registrations.yaml` but do not run.
+registrations stay in the agent's registrations manifest but do not run.
 """
 
 _DESC_LIST_REGISTRATIONS = """\
@@ -529,6 +529,11 @@ def list_registrations() -> str:
     return _list_registrations(path=MANIFEST_PATH_DEFAULT)
 
 
+def list_registrations_at(path: Path | str) -> str:
+    """Return registrations from a specific manifest path as JSON."""
+    return _list_registrations(path=path)
+
+
 def _registration_summary(r: Registration) -> dict[str, Any]:
     health = r.last_run_status
     if r.status == "disabled":
@@ -562,6 +567,11 @@ def _list_registrations(*, path: Path | str) -> str:
 def check_registrations() -> str:
     """Smoke-check active registrations and return a JSON health report."""
     return _run_coro_sync(lambda: _check_registrations(path=MANIFEST_PATH_DEFAULT))
+
+
+def check_registrations_at(path: Path | str) -> str:
+    """Smoke-check active registrations from a specific manifest path."""
+    return _run_coro_sync(lambda: _check_registrations(path=path))
 
 
 async def _check_registrations(*, path: Path | str) -> str:

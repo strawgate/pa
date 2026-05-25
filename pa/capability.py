@@ -37,7 +37,7 @@ _CANCELLED_TOOL_MESSAGE = "Tool call was cancelled before it returned."
 
 @dataclass
 class PaRegistrations(AbstractCapability[Any]):
-    """Loads ./pa/registrations.yaml and wires entries through native Pydantic AI hooks."""
+    """Loads pa's registrations manifest and wires entries through native Pydantic AI hooks."""
 
     manifest_path: str = str(MANIFEST_PATH_DEFAULT)
     expose_advanced_registration_tools: bool = True

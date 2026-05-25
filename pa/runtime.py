@@ -13,6 +13,7 @@ from pa.builtin_instructions import PA_BUILTIN_INSTRUCTIONS
 from pa.capability import PaRegistrations
 from pa.pydantic_ai_compat import apply_pydantic_ai_v2_harness_compat
 from pa.runtime_capabilities import PaPrimitiveTools, PaRuntimeContext
+from pa.state import ensure_state, resolve_state
 
 DEFAULT_AGENT_SPEC = Path("agent.yaml")
 
@@ -128,12 +129,17 @@ def build_agent(
     """
     apply_pydantic_ai_v2_harness_compat()
 
+    state = resolve_state(agent_spec_path)
+    ensure_state(state)
+    spec = _load_agent_spec(state.agent_spec_path)
+    _inject_registration_manifest_path(spec, state.registrations_path)
+
     # If no explicit model override, try to resolve from provider/route fields
     if model is None:
-        model = _resolve_model_from_yaml(Path(agent_spec_path))
+        model = _resolve_model_from_yaml(state.agent_spec_path)
 
-    agent: Agent = Agent.from_file(
-        str(agent_spec_path),
+    agent: Agent = Agent.from_spec(
+        spec,
         custom_capability_types=[PaRegistrations, CodeMode],
         model=model,
         instructions=PA_BUILTIN_INSTRUCTIONS,
@@ -145,6 +151,30 @@ def build_agent(
     _inject_complete_fn(agent)
 
     return agent
+
+
+def _load_agent_spec(agent_spec_path: Path) -> dict[str, Any]:
+    raw = yaml.safe_load(agent_spec_path.read_text())
+    if not isinstance(raw, dict):
+        raise ValueError(f"{agent_spec_path}: agent spec must be a YAML mapping")
+    return raw
+
+
+def _inject_registration_manifest_path(spec: dict[str, Any], manifest_path: Path) -> None:
+    capabilities = spec.get("capabilities")
+    if not isinstance(capabilities, list):
+        return
+    for capability in capabilities:
+        if not isinstance(capability, dict) or "PaRegistrations" not in capability:
+            continue
+        config = capability["PaRegistrations"]
+        if config is None:
+            config = {}
+        if not isinstance(config, dict):
+            return
+        config.setdefault("manifest_path", str(manifest_path))
+        capability["PaRegistrations"] = config
+        return
 
 
 def _inject_complete_fn(agent: Agent[Any, str]) -> None:

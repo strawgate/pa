@@ -1,4 +1,5 @@
-# agent.yaml -- written by `pa init`. Edit freely.
+# agent.yaml -- `pa init` writes this to ~/.pa/agent.yaml, then forks it into
+# each project. Edit freely.
 #
 # This file is user-owned configuration. pa's built-in operating instructions
 # are provided by the package at runtime; use the `instructions` field below for
