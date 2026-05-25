@@ -3,10 +3,12 @@
 Self-evolving Pydantic-AI agent harness. The agent extends its own toolset at
 runtime by writing Monty (sandboxed Python) snippets that persist across runs.
 
+**Requirements:** Python 3.11+
+
 ## Quick start
 
 ```bash
-uv add pa
+pip install pa
 pa init          # creates ~/.pa/agent.yaml, forks ./agent.yaml, and creates local state
 pa run "your prompt"
 pa repl          # interactive REPL with history
@@ -62,6 +64,9 @@ and after-tool `retry` responses all count toward the relevant native tool's
 budget, so broken self-evolution should be inspected or disabled rather than
 retried blindly.
 
+**Observability:** When the `logfire` package is installed, pa automatically
+instruments Pydantic AI calls for debugging and tracing.
+
 ## Concepts
 
 - **Registration**: a named Monty snippet bound to a slot. Created via
@@ -114,7 +119,8 @@ into the project by default.
 pa init                    Create the home default, project agent.yaml, docs, and state
 pa run <prompt>            Run once, resume from saved history
 pa run --no-history <p>    Run ignoring saved history
-pa repl                    Interactive REPL (/exit, /list, /health, /clear)
+pa repl                    Interactive REPL (/exit, /list /health /clear)
+pa repl --no-history       Start with a blank history
 pa doctor                  Smoke-check registration health
 pa clear-history           Delete saved history
 pa state path              Print this project's state directory
