@@ -1,5 +1,6 @@
 import json
 
+from pa import primitives
 from pa.manifest import Manifest, Registration
 from pa.registration_tools import (
     check_registrations,
@@ -100,6 +101,209 @@ def test_register_tool_persists_timeout(tmp_cwd):
     assert reg.timeout_s == 12.0
     listing = json.loads(list_registrations())
     assert listing[0]["timeout_s"] == 12.0
+
+
+def test_register_tool_success_message_explains_native_next_run(tmp_cwd):
+    result = register_tool(
+        "lower",
+        "Lowercase text.",
+        'args["text"].lower()',
+        {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+        {"text": "HELLO"},
+    )
+
+    assert result.startswith("OK:")
+    assert "next agent run" in result
+    assert "run_code" in result
+    assert "later in this run" in result
+
+
+def test_validate_tool_success_message_explains_native_next_run(tmp_cwd):
+    result = register_tool(
+        "lower",
+        "Lowercase text.",
+        'args["text"].lower()',
+        {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+    )
+    assert result.startswith("OK:")
+
+    result = validate_tool("lower", {"text": "HELLO"})
+
+    assert result.startswith("OK:")
+    assert "next agent run" in result
+    assert "run_code" in result
+    assert "later in this run" in result
+
+
+def test_register_tool_rejects_unawaited_async_primitive(tmp_cwd):
+    result = register_tool(
+        "bad_complete",
+        "Incorrectly uses complete without await.",
+        (
+            "schema = {\n"
+            '    "type": "object",\n'
+            '    "properties": {"category": {"type": "string"}},\n'
+            '    "required": ["category"],\n'
+            '    "additionalProperties": False,\n'
+            "}\n"
+            '{"category": complete(prompt="Classify the request", output_schema=schema)}'
+        ),
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        {},
+    )
+
+    assert result.startswith("OK:")
+    assert "disabled" in result
+    assert "did you forget to await" in result
+    reg = Manifest.load().find("bad_complete")
+    assert reg is not None
+    assert reg.status == "disabled"
+    assert "did you forget to await" in reg.last_error
+
+
+def test_register_tool_rejects_complete_without_output_schema(tmp_cwd):
+    result = register_tool(
+        "prompt_json",
+        "Incorrectly asks complete for prompt-only JSON.",
+        'await complete(prompt="Return JSON for " + args["text"])',
+        {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+        {"text": "hello"},
+    )
+
+    assert result.startswith("ERROR: invalid registration:")
+    assert "output_schema" in result
+    assert Manifest.load().registrations == []
+
+
+def test_register_tool_validates_output_schema(tmp_cwd, monkeypatch):
+    schema = {
+        "type": "object",
+        "properties": {"category": {"type": "string"}, "urgency": {"type": "string"}},
+        "required": ["category", "urgency"],
+        "additionalProperties": False,
+    }
+
+    async def fake_complete(prompt, system, data, output_schema, output_mode):
+        assert output_schema == schema
+        return {"category": "bug", "urgency": "high"}
+
+    monkeypatch.setattr(primitives, "_complete_fn", fake_complete)
+
+    result = register_tool(
+        "triage",
+        "Classify text.",
+        (
+            "schema = {\n"
+            '    "type": "object",\n'
+            '    "properties": {"category": {"type": "string"}, "urgency": {"type": "string"}},\n'
+            '    "required": ["category", "urgency"],\n'
+            '    "additionalProperties": False,\n'
+            "}\n"
+            'await complete(prompt="Classify", data=args["text"], output_schema=schema)'
+        ),
+        {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+        {"text": "checkout failed"},
+        output_json_schema=schema,
+        expected_example_output={"category": "bug", "urgency": "high"},
+    )
+
+    assert result.startswith("OK:")
+    reg = Manifest.load().find("triage")
+    assert reg is not None
+    assert reg.status == "active"
+    assert reg.output_json_schema == schema
+    assert reg.expected_example_output == {"category": "bug", "urgency": "high"}
+    listing = json.loads(list_registrations())
+    assert listing[0]["has_output_schema"] is True
+    assert listing[0]["has_expected_example_output"] is True
+
+
+def test_register_tool_allows_schema_without_expected_output(tmp_cwd):
+    result = register_tool(
+        "line_count",
+        "Count lines.",
+        '{"total": 3}',
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        {},
+        output_json_schema={
+            "type": "object",
+            "properties": {"total": {"type": "integer"}},
+            "required": ["total"],
+        },
+    )
+
+    assert result.startswith("OK:")
+    assert "exact example semantics were not checked" in result
+    reg = Manifest.load().find("line_count")
+    assert reg is not None
+    assert reg.status == "active"
+    assert reg.output_json_schema is not None
+    assert reg.output_json_schema["additionalProperties"] is False
+    listing = json.loads(list_registrations())
+    assert listing[0]["has_output_schema"] is True
+    assert listing[0]["has_expected_example_output"] is False
+
+
+def test_register_tool_rejects_expected_output_mismatch(tmp_cwd):
+    result = register_tool(
+        "line_count",
+        "Count lines.",
+        '{"total": 999}',
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        {},
+        output_json_schema={
+            "type": "object",
+            "properties": {"total": {"type": "integer"}},
+            "required": ["total"],
+            "additionalProperties": False,
+        },
+        expected_example_output={"total": 3},
+    )
+
+    assert result.startswith("OK:")
+    assert "disabled" in result
+    assert "example output mismatch" in result
+
+
+def test_register_tool_disables_output_schema_mismatch(tmp_cwd):
+    result = register_tool(
+        "bad_output",
+        "Returns the wrong output shape.",
+        '{"category": "bug"}',
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        {},
+        output_json_schema={
+            "type": "object",
+            "properties": {"category": {"type": "string"}, "urgency": {"type": "string"}},
+            "required": ["category", "urgency"],
+            "additionalProperties": False,
+        },
+        expected_example_output={"category": "bug"},
+    )
+
+    assert result.startswith("OK:")
+    assert "disabled" in result
+    assert "missing required field" in result
 
 
 def test_register_tool_rejects_timeout_above_limit(tmp_cwd):

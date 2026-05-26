@@ -19,16 +19,19 @@ pa repl          # interactive REPL with history
 **Two-tier tool architecture:**
 - **Sandboxed primitives** (`run_code`): `read_file`, `write_file`, `bash`,
   `list_dir`, `http_get`, `complete` — available as async functions inside a Monty
-  sandbox. State persists between calls (REPL-style).
+  sandbox. State persists between calls (REPL-style); pass `restart: true` to
+  `run_code` when a fresh sandbox is safer.
 - **Native tools**: registration functions and user-defined tools registered
   from prior runs — callable directly, visible in the agent's tool list.
 
 **Self-evolution:** the agent can call
-`register_tool(name, description, code, parameters_json_schema, example_args, timeout_s=10)`
+`register_tool(name, description, code, parameters_json_schema, example_args, output_json_schema=None, expected_example_output=None, timeout_s=10)`
 to create a persistent tool. Tools without an example are saved as drafts.
-Only validated active tools appear as native tools on the next run.
+Only validated active tools appear as native tools on the next run. Registered
+tools are not `run_code` globals and cannot be called from inside `run_code`.
 Use `timeout_s` for tools that legitimately need more sandbox time; it is
-capped at 60 seconds.
+capped at 60 seconds. Use `output_json_schema` for structured tool results and
+`expected_example_output` for deterministic tools with known example results.
 
 Agent-facing registration tools:
 - `register_tool` — save a proven repeatable operation as a native tool
@@ -48,7 +51,15 @@ Agent-facing registration tools:
   registrations
 
 **`complete()`** allows the agent to call its own model for sub-tasks
-(summarization, code generation, structured extraction).
+(summarization, code generation, structured extraction). Pass
+`output_schema=<json object schema>` for structured output; pa uses
+provider-native JSON schema output when supported and falls back to prompted
+structured output otherwise, then validates the returned dict against common
+JSON-schema constraints. `complete` is async, so registration snippets must use
+`await complete(...)`. Invalid structured sub-completion results are retried
+locally before the surrounding tool call fails.
+Registered tools that call `complete` must pass `output_schema=...`; this keeps
+completion-backed tools from silently validating prompt-only JSON wrappers.
 
 Registrations persist in pa's local state directory for the current project.
 Run `pa state path` to see the exact directory.
@@ -79,6 +90,11 @@ significant event in an agent run, useful for logging and integration:
 {"type": "run_completed", "output": "Hello!", "history_messages": 7}
 ```
 
+The default human progress view prints tool calls, retries, and compact return
+previews for native tools. `run_code` success returns stay terse by default
+because they often contain large file contents or diffs; use `--verbose` or
+`--jsonl` when you need every result summary.
+
 When the `logfire` package is installed, pa automatically instruments Pydantic AI
 calls for debugging and tracing.
 
@@ -101,7 +117,9 @@ calls for debugging and tracing.
   `complete`. Sandboxed inside `run_code` via Monty. The `tools` list in
   `agent.yaml` controls which primitives are sandboxed. Registered Monty tools
   can also call these primitives directly; lifecycle hooks see the outer
-  registered tool call rather than each inner primitive call.
+  registered tool call rather than each inner primitive call. `run_code`
+  preserves state between calls; use `restart: true` for unrelated snippets or
+  after confusing sandbox errors.
 
 ## Configuration
 

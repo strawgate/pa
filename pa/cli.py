@@ -141,7 +141,7 @@ def run(
     jsonl: bool = typer.Option(False, "--jsonl", help="Emit structured progress events as JSON lines."),
 ) -> None:
     """Run the agent once with the given prompt, resuming from saved history."""
-    _try_logfire()
+    _try_logfire(console_output=not jsonl)
     state = _ensure_config(announce=not jsonl)
     agent = build_agent(state.agent_spec_path)
     prior = [] if no_history else _history.load(state.history_path)
@@ -280,11 +280,11 @@ def state_wipe(
             console.print("[green]registrations already absent[/green]")
 
 
-def _try_logfire() -> None:
+def _try_logfire(*, console_output: bool = True) -> None:
     try:
         import logfire
 
-        logfire.configure(send_to_logfire="if-token-present")
+        logfire.configure(send_to_logfire="if-token-present", console=None if console_output else False)
         logfire.instrument_pydantic_ai()
     except ImportError:
         pass
@@ -326,6 +326,8 @@ def _render_tool_event(event: ProgressEvent, *, verbose: bool) -> str:
     if verbose or not isinstance(event, ToolCallFinishedEvent):
         return event.message
     if event.outcome == "success":
+        if event.tool_name != "run_code" and event.result_summary:
+            return f"<- {event.tool_name} success: {_clip_for_console(event.result_summary)}"
         return f"<- {event.tool_name} success"
     return f"<- {event.tool_name} {event.outcome}: {_clip_for_console(event.result_summary)}"
 

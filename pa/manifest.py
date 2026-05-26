@@ -33,6 +33,8 @@ class Registration(BaseModel):
     code: str = Field(min_length=1, max_length=8000)
     description: str = Field(default="", max_length=256)
     parameters_json_schema: dict[str, Any] = Field(default_factory=default_tool_schema)
+    output_json_schema: dict[str, Any] | None = None
+    expected_example_output: Any | None = None
     timeout_s: float = Field(
         default=DEFAULT_REGISTERED_TOOL_TIMEOUT_S,
         ge=MIN_REGISTERED_TOOL_TIMEOUT_S,

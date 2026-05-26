@@ -22,6 +22,7 @@ from pa.registration_tools import (
     REGISTERED_TOOL_EXTERNAL_FUNCTIONS,
     SELF_EVOLUTION_TOOL_MAX_RETRIES,
     validate_args_against_schema,
+    validate_registered_tool_output,
 )
 
 
@@ -221,6 +222,17 @@ def _make_registered_tool(reg: Registration, *, manifest: Manifest, manifest_pat
             )
         except RegistrationExecutionError as e:
             raise ModelRetry(f"registered tool {reg.name!r} failed: {e}") from e
+        try:
+            validate_registered_tool_output(reg, res.value)
+        except ValueError as e:
+            record_registration_result(
+                reg,
+                ok=False,
+                error=str(e),
+                manifest=manifest,
+                path=manifest_path,
+            )
+            raise ModelRetry(f"registered tool {reg.name!r} returned invalid output: {e}") from e
         return res.value
 
     def _validate_args(ctx: RunContext[Any], **kwargs: Any) -> None:
