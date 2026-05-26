@@ -27,6 +27,7 @@ from pa.progress import (
     ToolCallStartedEvent,
     event_to_dict,
     event_to_json,
+    summarize_args,
 )
 from pa.runtime import build_agent
 from pa.state import ensure_state, resolve_state
@@ -246,6 +247,14 @@ def test_progress_events_are_jsonl_serializable():
     assert event_to_json(event).startswith('{"args_summary": "command=pwd",')
 
 
+def test_progress_arg_summary_includes_multiple_native_tool_args():
+    assert summarize_args({"path": ".", "query": "needle"}) == "path=. query=needle"
+
+
+def test_progress_arg_summary_keeps_registration_name_with_code():
+    assert summarize_args({"name": "literal_search", "code": "args"}) == "name=literal_search code=args"
+
+
 def test_default_cli_renderer_hides_large_success_results():
     event = ToolCallFinishedEvent(
         message="<- run_code success: # pa Self-evolving Pydantic-AI agent harness...",
@@ -257,6 +266,20 @@ def test_default_cli_renderer_hides_large_success_results():
 
     assert _render_tool_event(event, verbose=False) == "<- run_code success"
     assert _render_tool_event(event, verbose=True).startswith("<- run_code success: # pa")
+
+
+def test_default_cli_renderer_shows_native_tool_success_summary():
+    event = ToolCallFinishedEvent(
+        message="<- review_changes success: files=6 findings=1 parse_error=invalid JSON",
+        tool_name="review_changes",
+        tool_call_id="tc1",
+        outcome="success",
+        result_summary="files=6 findings=1 parse_error=invalid JSON",
+    )
+
+    assert _render_tool_event(event, verbose=False) == (
+        "<- review_changes success: files=6 findings=1 parse_error=invalid JSON"
+    )
 
 
 def test_progress_value_summary_has_hard_cap():

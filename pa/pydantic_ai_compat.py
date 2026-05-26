@@ -14,6 +14,7 @@ def apply_pydantic_ai_v2_harness_compat() -> None:
     """
     _patch_harness_parallel_execution_mode()
     _patch_run_sync_event_loop_warning()
+    _patch_combined_toolset_for_run_warning()
 
 
 def _patch_harness_parallel_execution_mode() -> None:
@@ -66,3 +67,31 @@ def _patch_run_sync_event_loop_warning() -> None:
 
     setattr(_compat, "_pa_avoids_get_event_loop_warning", True)
     setattr(utils, "get_event_loop", _compat)
+
+
+def _patch_combined_toolset_for_run_warning() -> None:
+    """Avoid intermittent unawaited `AbstractToolset.for_run` warnings in the V2 beta.
+
+    Pydantic AI's CombinedToolset currently builds all `for_run` coroutine
+    objects up front and runs them through its anyio gather helper. Under Python
+    warning-as-error paths, cancellation/finalization can intermittently report
+    one of those coroutine objects as never awaited. Sequential setup is fine
+    for pa's small toolset graph and removes that warning source.
+    """
+    from dataclasses import replace
+
+    from pydantic_ai.toolsets.combined import CombinedToolset
+
+    method = CombinedToolset.for_run
+    if getattr(method, "_pa_avoids_unawaited_for_run_warning", False):
+        return
+
+    @wraps(method)
+    async def _compat(self: CombinedToolset[Any], ctx: Any) -> CombinedToolset[Any]:
+        new_toolsets = []
+        for toolset in self.toolsets:
+            new_toolsets.append(await toolset.for_run(ctx))
+        return replace(self, toolsets=new_toolsets)
+
+    setattr(_compat, "_pa_avoids_unawaited_for_run_warning", True)
+    setattr(CombinedToolset, "for_run", _compat)

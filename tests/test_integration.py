@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import typer
 import yaml
-from pydantic_ai.messages import ModelResponse, SystemPromptPart, TextPart, ToolCallPart
+from pydantic_ai.messages import ModelResponse, RetryPromptPart, SystemPromptPart, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel, AgentInfo
 from typer.testing import CliRunner
 
@@ -90,6 +90,24 @@ class TestBuildAgent:
         assert "disable_registration" in seen_tools
         assert "remove_registration" in seen_tools
 
+    def test_registration_expected_output_schema_guides_json_values(self, agent_dir):
+        """expected_example_output should advertise concrete JSON value shapes, not unconstrained Any."""
+        expected_output_schema = {}
+
+        def capture_tools(messages, info: AgentInfo):
+            nonlocal expected_output_schema
+            for tool in info.function_tools:
+                if tool.name == "register_tool":
+                    expected_output_schema = tool.parameters_json_schema["properties"]["expected_example_output"]
+            return ModelResponse(parts=[TextPart(content="hi")])
+
+        build_agent(model=FunctionModel(capture_tools)).run_sync("test")
+
+        any_of = expected_output_schema["anyOf"]
+        assert {"type": "object", "additionalProperties": True} in any_of
+        assert {"type": "array", "items": {}} in any_of
+        assert {"type": "null"} in any_of
+
     def test_advanced_registration_tools_can_be_hidden(self, agent_dir):
         """Hosts can still hide high-risk policy surfaces explicitly."""
         hide_advanced_registration_tools(agent_dir)
@@ -111,12 +129,14 @@ class TestBuildAgent:
     def test_run_code_description_lists_all_tools(self, agent_dir):
         """The run_code tool description includes the configured sandboxed primitives."""
         description = ""
+        parameters_json_schema = {}
 
         def capture_desc(messages, info: AgentInfo):
-            nonlocal description
+            nonlocal description, parameters_json_schema
             for t in info.function_tools:
                 if t.name == "run_code":
                     description = t.description
+                    parameters_json_schema = t.parameters_json_schema
             return ModelResponse(parts=[TextPart(content="hi")])
 
         agent = build_agent(model=FunctionModel(capture_desc))
@@ -130,6 +150,7 @@ class TestBuildAgent:
             "http_get",
         ]:
             assert tool_name in description, f"{tool_name} not found in run_code description"
+        assert "restart" in parameters_json_schema["properties"]
 
     def test_run_code_can_list_directories(self, agent_dir):
         """CodeMode exposes list_dir as a sandbox primitive."""
@@ -159,6 +180,197 @@ class TestBuildAgent:
 
         assert result.output == "done"
         assert "agent.yaml" in observed_return
+
+    def test_complete_can_request_native_structured_output(self, agent_dir):
+        """complete(output_schema=...) asks Pydantic AI for native structured output."""
+        call_count = 0
+        structured_output_modes = []
+        observed_return = None
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, observed_return
+            output_mode = info.model_request_parameters.output_mode
+            if output_mode == "native":
+                structured_output_modes.append(output_mode)
+                return ModelResponse(parts=[TextPart(content='{"ok": true, "items": ["a"]}')])
+
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="run_code",
+                            args={
+                                "code": (
+                                    "schema = {\n"
+                                    '    "type": "object",\n'
+                                    '    "properties": {\n'
+                                    '        "ok": {"type": "boolean"},\n'
+                                    '        "items": {"type": "array", "items": {"type": "string"}},\n'
+                                    "    },\n"
+                                    '    "required": ["ok", "items"],\n'
+                                    '    "additionalProperties": False,\n'
+                                    "}\n"
+                                    'result = await complete(prompt="return structured data", output_schema=schema)\n'
+                                    "result"
+                                )
+                            },
+                            tool_call_id="tc1",
+                        )
+                    ]
+                )
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "run_code" and hasattr(part, "content"):
+                        observed_return = part.content
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("call structured complete")
+
+        assert result.output == "done"
+        assert structured_output_modes == ["native"]
+        assert observed_return == {"ok": True, "items": ["a"]}
+
+    def test_complete_structured_output_falls_back_to_prompted(self, agent_dir):
+        """complete(output_schema=...) falls back when native structured output is unsupported."""
+        call_count = 0
+        structured_output_modes = []
+        observed_return = None
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, observed_return
+            output_mode = info.model_request_parameters.output_mode
+            if output_mode == "prompted":
+                structured_output_modes.append(output_mode)
+                return ModelResponse(parts=[TextPart(content='{"ok": true}')])
+
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="run_code",
+                            args={
+                                "code": (
+                                    "schema = {\n"
+                                    '    "type": "object",\n'
+                                    '    "properties": {"ok": {"type": "boolean"}},\n'
+                                    '    "required": ["ok"],\n'
+                                    '    "additionalProperties": False,\n'
+                                    "}\n"
+                                    'result = await complete(prompt="return structured data", output_schema=schema)\n'
+                                    "result"
+                                )
+                            },
+                            tool_call_id="tc1",
+                        )
+                    ]
+                )
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "run_code" and hasattr(part, "content"):
+                        observed_return = part.content
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        model = FunctionModel(scripted, profile={"supports_json_schema_output": False})
+        result = build_agent(model=model).run_sync("call fallback structured complete")
+
+        assert result.output == "done"
+        assert structured_output_modes == ["prompted"]
+        assert observed_return == {"ok": True}
+
+    def test_complete_structured_output_validates_schema(self, agent_dir):
+        """complete(output_schema=...) rejects returned dicts that do not match the schema."""
+        call_count = 0
+        retry_prompt = ""
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, retry_prompt
+            if info.model_request_parameters.output_mode == "native":
+                return ModelResponse(parts=[TextPart(content='{"value": 1}')])
+
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="run_code",
+                            args={
+                                "code": (
+                                    "schema = {\n"
+                                    '    "type": "object",\n'
+                                    '    "properties": {"value": {"type": "integer", "enum": ["not a number"]}},\n'
+                                    '    "required": ["value"],\n'
+                                    '    "additionalProperties": False,\n'
+                                    "}\n"
+                                    'await complete(prompt="return any value", output_schema=schema)\n'
+                                )
+                            },
+                            tool_call_id="tc1",
+                        )
+                    ]
+                )
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "run_code" and hasattr(part, "content"):
+                        retry_prompt = str(part.content)
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("call invalid structured complete")
+
+        assert result.output == "done"
+        assert "$.value" in retry_prompt
+        assert "expected one of" in retry_prompt
+
+    def test_complete_structured_output_repairs_invalid_sub_completion(self, agent_dir):
+        """Invalid structured sub-completions retry inside complete() before run_code retries."""
+        outer_calls = 0
+        structured_calls = 0
+        observed_return = None
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal outer_calls, structured_calls, observed_return
+            output_mode = info.model_request_parameters.output_mode
+            if output_mode == "native":
+                structured_calls += 1
+                if structured_calls == 1:
+                    return ModelResponse(parts=[TextPart(content='{"value": "wrong"}')])
+                return ModelResponse(parts=[TextPart(content='{"value": 7}')])
+
+            outer_calls += 1
+            if outer_calls == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="run_code",
+                            args={
+                                "code": (
+                                    "schema = {\n"
+                                    '    "type": "object",\n'
+                                    '    "properties": {"value": {"type": "integer"}},\n'
+                                    '    "required": ["value"],\n'
+                                    '    "additionalProperties": False,\n'
+                                    "}\n"
+                                    'result = await complete(prompt="return structured data", output_schema=schema)\n'
+                                    "result"
+                                )
+                            },
+                            tool_call_id="tc1",
+                        )
+                    ]
+                )
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "run_code" and hasattr(part, "content"):
+                        observed_return = part.content
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("call repairable structured complete")
+
+        assert result.output == "done"
+        assert structured_calls == 2
+        assert outer_calls == 2
+        assert observed_return == {"value": 7}
 
     def test_agent_template_instructions_are_user_owned(self, agent_dir):
         """pa's built-in instructions are injected by code, not copied into agent.yaml."""
@@ -831,6 +1043,53 @@ class TestSelfImprovementLoop:
         assert reg["status"] == "active"
         assert reg["timeout_s"] == 30.0
 
+    def test_registered_tool_is_available_on_next_run_only(self, agent_dir):
+        """Registering a native tool does not mutate the already-running toolset."""
+        call_count = 0
+        tools_by_turn = []
+
+        def register_model(messages, info: AgentInfo):
+            nonlocal call_count
+            call_count += 1
+            tools_by_turn.append({tool.name for tool in info.function_tools})
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="register_tool",
+                            args={
+                                "name": "double",
+                                "description": "Double an integer.",
+                                "code": 'args["x"] * 2',
+                                "parameters_json_schema": {
+                                    "type": "object",
+                                    "properties": {"x": {"type": "integer"}},
+                                    "required": ["x"],
+                                    "additionalProperties": False,
+                                },
+                                "example_args": {"x": 2},
+                            },
+                            tool_call_id="tc1",
+                        )
+                    ]
+                )
+            return ModelResponse(parts=[TextPart(content="registered")])
+
+        build_agent(model=FunctionModel(register_model)).run_sync("register active")
+
+        assert len(tools_by_turn) >= 2
+        assert all("double" not in tools for tools in tools_by_turn)
+
+        next_run_tools = set()
+
+        def next_model(messages, info: AgentInfo):
+            next_run_tools.update(tool.name for tool in info.function_tools)
+            return ModelResponse(parts=[TextPart(content="next")])
+
+        build_agent(model=FunctionModel(next_model)).run_sync("next")
+
+        assert "double" in next_run_tools
+
     def test_registration_toolset_allows_multiple_tool_arg_repairs(self, agent_dir):
         """Registration management tools do not use a tiny retry budget."""
         assert SELF_EVOLUTION_TOOL_MAX_RETRIES == 15
@@ -888,6 +1147,51 @@ class TestSelfImprovementLoop:
         assert call_count == 5
         assert manifest["registrations"][0]["name"] == "double"
         assert manifest["registrations"][0]["status"] == "active"
+
+    def test_registration_tool_errors_are_retry_feedback(self, agent_dir):
+        """Registration-management errors should not look like successful tool returns."""
+        call_count = 0
+        retry_prompt = ""
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, retry_prompt
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="register_tool",
+                            args={
+                                "name": "line_count",
+                                "description": "Count lines.",
+                                "code": '{"total": 999}',
+                                "parameters_json_schema": {
+                                    "type": "object",
+                                    "properties": {},
+                                    "additionalProperties": False,
+                                },
+                                "example_args": {},
+                                "output_json_schema": {
+                                    "type": "object",
+                                    "properties": {"total": {"type": "integer"}},
+                                    "required": ["total"],
+                                    "additionalProperties": False,
+                                },
+                                "expected_example_output": {"total": 3},
+                            },
+                            tool_call_id="tc1",
+                        )
+                    ]
+                )
+            retry_prompt = "\n".join(
+                str(part.content) for msg in messages for part in msg.parts if isinstance(part, RetryPromptPart)
+            )
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("register invalid tool")
+
+        assert result.output == "done"
+        assert "example output mismatch" in retry_prompt
 
     def test_validated_registered_tool_is_native_with_schema(self, agent_dir):
         """Validated tools are exposed as native tools with their declared schema."""
@@ -948,6 +1252,54 @@ class TestSelfImprovementLoop:
         assert result.output == "done"
         assert tool_schema["properties"]["x"]["type"] == "integer"
         assert observed_return == "6"
+
+    def test_registered_tool_is_not_run_code_global(self, agent_dir):
+        """Registered native tools are not injected as functions inside run_code."""
+        manifest = yaml.safe_load(registrations_path(agent_dir).read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "tool",
+                "name": "double",
+                "description": "Double an integer.",
+                "code": 'args["x"] * 2',
+                "parameters_json_schema": {
+                    "type": "object",
+                    "properties": {"x": {"type": "integer"}},
+                    "required": ["x"],
+                    "additionalProperties": False,
+                },
+                "status": "active",
+                "validated_example_args": {"x": 2},
+            }
+        )
+        registrations_path(agent_dir).write_text(yaml.safe_dump(manifest))
+        call_count = 0
+        retry_prompt = ""
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, retry_prompt
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="run_code",
+                            args={"code": "await double(x=3)"},
+                            tool_call_id="tc1",
+                        )
+                    ]
+                )
+            for msg in messages:
+                for part in msg.parts:
+                    if getattr(part, "tool_name", None) == "run_code" and hasattr(part, "content"):
+                        retry_prompt = str(part.content)
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("call double inside run_code")
+
+        assert result.output == "done"
+        assert "double" in retry_prompt
+        assert "not defined" in retry_prompt or "Unknown function" in retry_prompt
 
     def test_registered_tool_can_use_filesystem_primitives(self, agent_dir):
         """Registered Monty tools can call list_dir and read_file directly."""
@@ -1099,6 +1451,98 @@ class TestSelfImprovementLoop:
         manifest = yaml.safe_load(registrations_path(agent_dir).read_text())
         reg = manifest["registrations"][0]
         assert reg["last_error"]
+        assert reg["last_run_status"] == "error"
+
+    def test_registered_tool_rejects_unawaited_async_placeholder(self, agent_dir):
+        """Active tools reject missing-await placeholders instead of returning bogus data."""
+        manifest = yaml.safe_load(registrations_path(agent_dir).read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "tool",
+                "name": "bad_complete",
+                "description": "A tool that forgot to await complete.",
+                "code": (
+                    "schema = {\n"
+                    '    "type": "object",\n'
+                    '    "properties": {"category": {"type": "string"}},\n'
+                    '    "required": ["category"],\n'
+                    '    "additionalProperties": False,\n'
+                    "}\n"
+                    '{"category": complete(prompt="Classify the request", output_schema=schema)}'
+                ),
+                "status": "active",
+                "parameters_json_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+                "validated_example_args": {},
+            }
+        )
+        registrations_path(agent_dir).write_text(yaml.safe_dump(manifest))
+        call_count = 0
+        retry_prompt = ""
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, retry_prompt
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(parts=[ToolCallPart(tool_name="bad_complete", args={}, tool_call_id="tc1")])
+            retry_prompt = "\n".join(str(part) for msg in messages for part in msg.parts)
+            return ModelResponse(parts=[TextPart(content="recovered")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("call bad complete tool")
+
+        assert result.output == "recovered"
+        assert "did you forget to await" in retry_prompt
+        manifest = yaml.safe_load(registrations_path(agent_dir).read_text())
+        reg = manifest["registrations"][0]
+        assert "did you forget to await" in reg["last_error"]
+        assert reg["last_run_status"] == "error"
+
+    def test_registered_tool_rejects_output_schema_mismatch(self, agent_dir):
+        """Active tools validate declared output schemas at runtime."""
+        manifest = yaml.safe_load(registrations_path(agent_dir).read_text())
+        manifest["registrations"].append(
+            {
+                "slot": "tool",
+                "name": "bad_output",
+                "description": "A tool that returns an invalid result shape.",
+                "code": '{"category": "bug"}',
+                "status": "active",
+                "parameters_json_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+                "output_json_schema": {
+                    "type": "object",
+                    "properties": {"category": {"type": "string"}, "urgency": {"type": "string"}},
+                    "required": ["category", "urgency"],
+                    "additionalProperties": False,
+                },
+                "validated_example_args": {},
+            }
+        )
+        registrations_path(agent_dir).write_text(yaml.safe_dump(manifest))
+        call_count = 0
+        retry_prompt = ""
+
+        def scripted(messages, info: AgentInfo):
+            nonlocal call_count, retry_prompt
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(parts=[ToolCallPart(tool_name="bad_output", args={}, tool_call_id="tc1")])
+            retry_prompt = "\n".join(str(part) for msg in messages for part in msg.parts)
+            return ModelResponse(parts=[TextPart(content="recovered")])
+
+        result = build_agent(model=FunctionModel(scripted)).run_sync("call bad output tool")
+
+        assert result.output == "recovered"
+        assert "missing required field 'urgency'" in retry_prompt
+        manifest = yaml.safe_load(registrations_path(agent_dir).read_text())
+        reg = manifest["registrations"][0]
+        assert "missing required field 'urgency'" in reg["last_error"]
         assert reg["last_run_status"] == "error"
 
     def test_list_registrations_via_run_code(self, agent_dir):
@@ -1257,8 +1701,12 @@ class TestCLIRun:
         def fake_build_agent(agent_spec_path):
             return real_build_agent(agent_spec_path, model=FunctionModel(scripted))
 
+        logfire_console_flags = []
+
         monkeypatch.setattr(cli, "build_agent", fake_build_agent)
-        monkeypatch.setattr(cli, "_try_logfire", lambda: None)
+        monkeypatch.setattr(
+            cli, "_try_logfire", lambda *, console_output=True: logfire_console_flags.append(console_output)
+        )
 
         result = CliRunner().invoke(cli.app, ["run", "--jsonl", "--no-history", "say hi"])
 
@@ -1269,3 +1717,4 @@ class TestCLIRun:
         assert "history_saved" in event_types
         assert payloads[-1]["type"] == "run_completed"
         assert payloads[-1]["output"] == "done"
+        assert logfire_console_flags == [False]

@@ -21,3 +21,11 @@ def test_run_sync_loop_compat_uses_thread_local_loops():
         loops = list(pool.map(lambda _: get_loop(), range(2)))
 
     assert loops[0] is not loops[1]
+
+
+def test_combined_toolset_for_run_warning_compat_is_applied():
+    apply_pydantic_ai_v2_harness_compat()
+
+    from pydantic_ai.toolsets.combined import CombinedToolset
+
+    assert getattr(CombinedToolset.for_run, "_pa_avoids_unawaited_for_run_warning", False) is True

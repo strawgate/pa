@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Awaitable, Callable, Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
+from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.toolsets import FunctionToolset
+from pydantic import Field
 from pydantic_core import to_jsonable_python
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
@@ -41,6 +44,8 @@ _SCALAR_JSON_TYPES = {
     "array": list,
 }
 
+_COMPLETE_CALL_RE = re.compile(r"\bcomplete\s*\(")
+
 SELF_EVOLUTION_TOOL_MAX_RETRIES = 15
 
 REGISTERED_TOOL_EXTERNAL_FUNCTIONS: dict[str, Callable[..., Awaitable[Any] | Any]] = {
@@ -58,8 +63,17 @@ async def write_file(*, path: str, content: str) -> str: ...
 async def list_dir(*, path: str = ".") -> list[dict[str, Any]]: ...
 async def bash(*, command: str, timeout_s: float = 30.0) -> dict[str, Any]: ...
 async def http_get(*, url: str, timeout_s: float = 30.0) -> dict[str, Any]: ...
-async def complete(*, prompt: str, system: str = "", data: str = "") -> str: ...
+async def complete(
+    *,
+    prompt: str,
+    system: str = "",
+    data: str = "",
+    output_schema: dict[str, Any] | None = None,
+    output_mode: str = "native",
+) -> Any: ...
 """
+
+JsonToolValue = dict[str, object] | list[object] | str | int | float | bool | None
 
 _REGISTRATION_TOOLSET_INSTRUCTIONS = """\
 Registration code is Monty Python. Inputs are injected as variables and the
@@ -89,6 +103,13 @@ Working snippets:
   `await read_file(path=...)` and `await list_dir(path=...)` when they need
   filesystem context. Use `timeout_s` up to 60 seconds for legitimately slower
   tools that call `complete`, run bounded shell commands, or fetch network data.
+  Always `await complete(...)`; it already returns the full text or structured
+  dict, so do not wrap an un-awaited `complete(...)` call in another object. For
+  structured LLM sub-tasks, pass `output_schema` to `complete`; it uses
+  provider-native JSON schema output when supported and falls back to prompted
+  structured output when native support is unavailable. Invalid structured
+  sub-completion results are retried locally before the surrounding tool call
+  fails.
 
 Pydantic AI tool retries are fatal when exhausted. A validation error, denied
 tool call, bad hook result, or after-tool `retry` response counts against that
@@ -197,6 +218,15 @@ Registered tools may also await `read_file`, `write_file`, `list_dir`, `bash`,
 possible; without `example_args`, the tool is saved as a draft and is not
 callable until `validate_tool` succeeds. Set `timeout_s` when validation and
 future calls need more than the default sandbox time; the maximum is 60 seconds.
+If the tool calls `complete`, it must use `await complete(..., output_schema=schema)`.
+For structured tool results, provide `output_json_schema` too; pa validates that
+result when activating, health-checking, and running the tool.
+For deterministic structured tools, also provide `expected_example_output` when
+the model can reliably supply it; pa compares the validation result exactly so a
+shape-correct but wrong tool does not become active.
+When validation succeeds, the tool is exposed as a native tool on the next
+agent run. It is not available later in the same run and cannot be called from
+inside `run_code`.
 
 Example code: `args["text"].strip().lower()`
 """
@@ -206,7 +236,11 @@ Validate a draft registered tool with concrete example arguments.
 
 Use after `register_tool` saved a draft, or after repairing a disabled tool. The
 example args must satisfy the tool schema. On success, the tool becomes active
-and will be exposed as a native tool on the next agent run.
+and will be exposed as a native tool on the next agent run. It is not available
+later in the same run and cannot be called from inside `run_code`. Pass
+`output_json_schema` to add or replace result validation while validating. Pass
+`expected_example_output` for deterministic tools when you want an exact
+semantic check for the example args.
 """
 
 _DESC_DISABLE_REGISTRATION = """\
@@ -266,6 +300,43 @@ def _normalize_tool_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
     return normalized
 
 
+def _normalize_output_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
+    if schema is None:
+        return None
+    if not isinstance(schema, dict):
+        raise ValueError("tool output_json_schema must be a JSON schema object")
+    normalized = dict(schema)
+    if (normalized.get("type") == "object" or "properties" in normalized) and "properties" in normalized:
+        normalized.setdefault("additionalProperties", False)
+    return normalized
+
+
+def _validate_tool_code_policy(code: str) -> None:
+    if _COMPLETE_CALL_RE.search(code) and "output_schema" not in code:
+        raise ValueError("registered tools that call complete must pass output_schema=... for reliable validation")
+
+
+def validate_registered_tool_output(reg: Registration, value: Any) -> None:
+    primitives.reject_unresolved_async_placeholders(value)
+    if reg.output_json_schema is not None:
+        primitives.validate_json_schema_subset(reg.output_json_schema, value)
+
+
+def validate_expected_example_output(reg: Registration, value: Any) -> None:
+    if reg.expected_example_output is None:
+        return
+    actual = to_jsonable_python(value)
+    expected = to_jsonable_python(reg.expected_example_output)
+    if actual != expected:
+        raise ValueError(f"example output mismatch: expected {expected!r}, got {actual!r}")
+
+
+def _schema_only_validation_note(reg: Registration) -> str:
+    if reg.output_json_schema is None or reg.expected_example_output is not None:
+        return ""
+    return " Shape was validated, but no expected_example_output is stored; exact example semantics were not checked."
+
+
 def validate_args_against_schema(schema: dict[str, Any], args: dict[str, Any]) -> None:
     """Small JSON-schema subset validator for registered tool arguments."""
     if schema.get("type", "object") != "object":
@@ -307,6 +378,12 @@ def validate_args_against_schema(schema: dict[str, Any], args: dict[str, Any]) -
 
 def _stringify_error(e: Exception) -> str:
     return stringify_error(e)
+
+
+def _return_or_retry_for_agent(result: str, *, retry_disabled_validation: bool = False) -> str:
+    if result.startswith("ERROR:") or (retry_disabled_validation and "validation failed" in result):
+        raise ModelRetry(result)
+    return result
 
 
 def _run_coro_sync(fn: Callable[[], Coroutine[Any, Any, Any]]) -> Any:
@@ -386,6 +463,8 @@ async def _run_tool_validation(reg: Registration, example_args: dict[str, Any]) 
         extra_stubs=REGISTERED_TOOL_EXTRA_STUBS,
         limits=limits_for_registration(reg),
     )
+    validate_registered_tool_output(reg, result.value)
+    validate_expected_example_output(reg, result.value)
     return result.value
 
 
@@ -399,6 +478,8 @@ def register_tool(
     code: str,
     parameters_json_schema: dict[str, Any] | None = None,
     example_args: dict[str, Any] | None = None,
+    output_json_schema: dict[str, Any] | None = None,
+    expected_example_output: Any | None = None,
     timeout_s: float = DEFAULT_REGISTERED_TOOL_TIMEOUT_S,
 ) -> str:
     """Register a reusable Monty tool.
@@ -415,6 +496,8 @@ def register_tool(
             code,
             parameters_json_schema,
             example_args,
+            output_json_schema,
+            expected_example_output,
             timeout_s,
             path=MANIFEST_PATH_DEFAULT,
         )
@@ -427,12 +510,16 @@ async def _register_tool(
     code: str,
     parameters_json_schema: dict[str, Any] | None,
     example_args: dict[str, Any] | None,
+    output_json_schema: dict[str, Any] | None,
+    expected_example_output: Any | None,
     timeout_s: float,
     *,
     path: Path | str,
 ) -> str:
     try:
         schema = _normalize_tool_schema(parameters_json_schema)
+        output_schema = _normalize_output_schema(output_json_schema)
+        _validate_tool_code_policy(code)
         compile_registration(slot="tool", name=name, code=code, extra_stubs=REGISTERED_TOOL_EXTRA_STUBS)
         reg = Registration(
             slot="tool",
@@ -440,6 +527,8 @@ async def _register_tool(
             code=code,
             description=description,
             parameters_json_schema=schema,
+            output_json_schema=output_schema,
+            expected_example_output=expected_example_output,
             timeout_s=timeout_s,
             status="draft",
         )
@@ -456,9 +545,12 @@ async def _register_tool(
         else:
             reg.status = "active"
             reg.validated_example_args = example_args
-            status_note = "validated and activated"
+            status_note = (
+                "validated and activated; it will be exposed as a native tool on the next agent run, "
+                "not inside run_code or later in this run" + _schema_only_validation_note(reg)
+            )
     else:
-        status_note = "saved as draft; call validate_tool before it becomes callable"
+        status_note = "saved as draft; call validate_tool before it becomes callable on a future run"
 
     m = _load(path)
     try:
@@ -471,12 +563,32 @@ async def _register_tool(
     return f"OK: registered tool/{name} ({reg.status}). {status_note}."
 
 
-def validate_tool(name: str, example_args: dict[str, Any]) -> str:
+def validate_tool(
+    name: str,
+    example_args: dict[str, Any],
+    output_json_schema: dict[str, Any] | None = None,
+    expected_example_output: Any | None = None,
+) -> str:
     """Validate a registered tool with example args and activate it on success."""
-    return _run_coro_sync(lambda: _validate_tool(name, example_args, path=MANIFEST_PATH_DEFAULT))
+    return _run_coro_sync(
+        lambda: _validate_tool(
+            name,
+            example_args,
+            output_json_schema,
+            expected_example_output,
+            path=MANIFEST_PATH_DEFAULT,
+        )
+    )
 
 
-async def _validate_tool(name: str, example_args: dict[str, Any], *, path: Path | str) -> str:
+async def _validate_tool(
+    name: str,
+    example_args: dict[str, Any],
+    output_json_schema: dict[str, Any] | None = None,
+    expected_example_output: Any | None = None,
+    *,
+    path: Path | str,
+) -> str:
     m = _load(path)
     reg = m.find(name)
     if reg is None:
@@ -484,6 +596,10 @@ async def _validate_tool(name: str, example_args: dict[str, Any], *, path: Path 
     if reg.slot != "tool":
         return f"ERROR: registration {name!r} is a {reg.slot}, not a tool"
     try:
+        if output_json_schema is not None:
+            reg.output_json_schema = _normalize_output_schema(output_json_schema)
+        if expected_example_output is not None:
+            reg.expected_example_output = expected_example_output
         value = await _run_tool_validation(reg, example_args)
     except (MontyBridgeError, ValueError) as e:
         reg.status = "disabled"
@@ -492,10 +608,15 @@ async def _validate_tool(name: str, example_args: dict[str, Any], *, path: Path 
         return f"ERROR: validation failed for tool/{name}: {e}"
     reg.status = "active"
     reg.validated_example_args = example_args
+    if expected_example_output is not None:
+        reg.expected_example_output = expected_example_output
     reg.last_error = ""
     _save(m, path)
     preview = json.dumps(value, default=str)[:160]
-    return f"OK: validated and activated tool/{name}. Example result: {preview}"
+    return (
+        f"OK: validated and activated tool/{name}. It will be exposed as a native tool on the next agent run, "
+        f"not inside run_code or later in this run. Example result: {preview}.{_schema_only_validation_note(reg)}"
+    )
 
 
 def disable_registration(name: str, reason: str = "") -> str:
@@ -552,6 +673,8 @@ def _registration_summary(r: Registration) -> dict[str, Any]:
     }
     if r.slot == "tool":
         summary["timeout_s"] = r.timeout_s
+        summary["has_output_schema"] = r.output_json_schema is not None
+        summary["has_expected_example_output"] = r.expected_example_output is not None
     return summary
 
 
@@ -598,6 +721,12 @@ async def _check_registrations(*, path: Path | str) -> str:
                 else:
                     result = await run_registration(reg, inputs=inputs, manifest=m, manifest_path=path)
                 policy_error = ""
+                if reg.slot == "tool":
+                    validate_registered_tool_output(reg, result.value)
+                    if inputs == {"args": reg.validated_example_args}:
+                        validate_expected_example_output(reg, result.value)
+                else:
+                    primitives.reject_unresolved_async_placeholders(result.value)
                 if reg.slot == "compaction":
                     policy_error = compaction_policy_error(result.value, len(inputs["messages"]))
                 if policy_error:
@@ -611,7 +740,7 @@ async def _check_registrations(*, path: Path | str) -> str:
                 record_registration_result(
                     reg,
                     ok=False,
-                    error=f"invalid smoke-test args: {e}",
+                    error=f"smoke test failed: {e}",
                     manifest=m,
                     path=path,
                 )
@@ -676,25 +805,25 @@ def make_registration_toolset(manifest_path: str | Path, *, include_advanced: bo
     path = Path(manifest_path)
 
     def register_instruction_bound(name: str, code: str) -> str:
-        return _register("instruction", name, code, path=path)
+        return _return_or_retry_for_agent(_register("instruction", name, code, path=path))
 
     def register_compaction_bound(name: str, code: str) -> str:
-        return _register("compaction", name, code, path=path)
+        return _return_or_retry_for_agent(_register("compaction", name, code, path=path))
 
     def register_before_tool_hook_bound(name: str, code: str) -> str:
-        return _register("before_tool_hook", name, code, path=path)
+        return _return_or_retry_for_agent(_register("before_tool_hook", name, code, path=path))
 
     def register_after_tool_hook_bound(name: str, code: str) -> str:
-        return _register("after_tool_hook", name, code, path=path)
+        return _return_or_retry_for_agent(_register("after_tool_hook", name, code, path=path))
 
     def register_before_run_hook_bound(name: str, code: str) -> str:
-        return _register("before_run_hook", name, code, path=path)
+        return _return_or_retry_for_agent(_register("before_run_hook", name, code, path=path))
 
     def register_after_run_hook_bound(name: str, code: str) -> str:
-        return _register("after_run_hook", name, code, path=path)
+        return _return_or_retry_for_agent(_register("after_run_hook", name, code, path=path))
 
     def register_tool_filter_bound(name: str, code: str) -> str:
-        return _register("tool_filter", name, code, path=path)
+        return _return_or_retry_for_agent(_register("tool_filter", name, code, path=path))
 
     async def register_tool_bound(
         name: str,
@@ -702,23 +831,56 @@ def make_registration_toolset(manifest_path: str | Path, *, include_advanced: bo
         code: str,
         parameters_json_schema: dict[str, Any] | None = None,
         example_args: dict[str, Any] | None = None,
+        output_json_schema: Annotated[
+            dict[str, Any] | None,
+            Field(description="Optional JSON schema for validating the tool result."),
+        ] = None,
+        expected_example_output: Annotated[
+            JsonToolValue,
+            Field(
+                description=(
+                    "Exact expected result for example_args. Required for deterministic tools when "
+                    "output_json_schema is provided. Pass the object/value itself, not null."
+                )
+            ),
+        ] = None,
         timeout_s: float = DEFAULT_REGISTERED_TOOL_TIMEOUT_S,
     ) -> str:
-        return await _register_tool(
+        result = await _register_tool(
             name,
             description,
             code,
             parameters_json_schema,
             example_args,
+            output_json_schema,
+            expected_example_output,
             timeout_s,
             path=path,
         )
+        return _return_or_retry_for_agent(result, retry_disabled_validation=True)
 
-    async def validate_tool_bound(name: str, example_args: dict[str, Any]) -> str:
-        return await _validate_tool(name, example_args, path=path)
+    async def validate_tool_bound(
+        name: str,
+        example_args: dict[str, Any],
+        output_json_schema: Annotated[
+            dict[str, Any] | None,
+            Field(description="Optional JSON schema for validating the tool result."),
+        ] = None,
+        expected_example_output: Annotated[
+            JsonToolValue,
+            Field(
+                description=(
+                    "Exact expected result for example_args. Required for deterministic tools when "
+                    "output_json_schema is provided. Pass the object/value itself, not null."
+                )
+            ),
+        ] = None,
+    ) -> str:
+        result = await _validate_tool(name, example_args, output_json_schema, expected_example_output, path=path)
+        return _return_or_retry_for_agent(result)
 
     def disable_registration_bound(name: str, reason: str = "") -> str:
-        return _disable_registration(name, reason, path=path)
+        return _return_or_retry_for_agent(_disable_registration(name, reason, path=path))
 
     def list_registrations_bound() -> str:
         return _list_registrations(path=path)
@@ -727,7 +889,7 @@ def make_registration_toolset(manifest_path: str | Path, *, include_advanced: bo
         return await _check_registrations(path=path)
 
     def remove_registration_bound(name: str) -> str:
-        return _remove_registration(name, path=path)
+        return _return_or_retry_for_agent(_remove_registration(name, path=path))
 
     toolset.tool_plain(name="register_instruction", description=_DESC_REGISTER_INSTRUCTION)(register_instruction_bound)
     toolset.tool_plain(name="register_before_tool_hook", description=_DESC_REGISTER_BEFORE_TOOL_HOOK)(

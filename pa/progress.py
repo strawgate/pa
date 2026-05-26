@@ -181,12 +181,32 @@ def summarize_args(args: str | dict[str, Any] | None) -> str:
     if isinstance(args, str):
         return clip(args)
     if code := args.get("code"):
-        return "code=" + clip(str(code))
+        prefix = summarize_arg_pairs(args, exclude={"code"})
+        summary = "code=" + clip(str(code))
+        return clip(f"{prefix} {summary}".strip())
     if command := args.get("command"):
-        return "command=" + clip(str(command))
-    if path := args.get("path"):
-        return "path=" + clip(str(path))
-    return clip(json_dump(args))
+        prefix = summarize_arg_pairs(args, exclude={"command"})
+        summary = "command=" + clip(str(command))
+        return clip(f"{prefix} {summary}".strip())
+    return summarize_arg_pairs(args)
+
+
+def summarize_arg_pairs(args: dict[str, Any], *, exclude: set[str] | None = None) -> str:
+    excluded = exclude or set()
+    parts = []
+    for key in sorted(args):
+        if key in excluded:
+            continue
+        parts.append(f"{key}={summarize_arg_value(args[key])}")
+    return clip(" ".join(parts))
+
+
+def summarize_arg_value(value: Any) -> str:
+    if isinstance(value, str):
+        return clip(value, 80)
+    if isinstance(value, bool) or value is None or isinstance(value, (int, float)):
+        return str(value)
+    return clip(json_dump(value), 80)
 
 
 def summarize_value(value: Any) -> str:

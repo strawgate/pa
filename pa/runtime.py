@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic_ai import Agent
+from pydantic_ai import NativeOutput, PromptedOutput, StructuredDict
+from pydantic_ai.exceptions import UserError
 from pydantic_ai.models import Model
 from pydantic_ai_harness import CodeMode
 
@@ -187,14 +190,64 @@ def _inject_complete_fn(agent: Agent[Any, str]) -> None:
         instructions="You are a helpful assistant. Respond concisely.",
     )
 
-    async def _do_complete(prompt: str, system: str = "", data: str = "") -> str:
+    async def _do_complete(
+        prompt: str,
+        system: str = "",
+        data: str = "",
+        output_schema: dict[str, Any] | None = None,
+        output_mode: str = "native",
+    ) -> Any:
         a = sub_agent
         if system:
             a = Agent(model=agent.model, instructions=system)
         user_msg = prompt
         if data:
             user_msg = prompt + "\n\n<data>\n" + data + "\n</data>"
-        result = await a.run(user_msg)
-        return result.output
+
+        if output_schema is None:
+            result = await a.run(user_msg)
+            return result.output
+
+        validation_error: ValueError | None = None
+        current_msg = user_msg
+        for attempt in range(3):
+            output_type = _structured_output_type(output_schema, output_mode)
+            try:
+                result = await a.run(current_msg, output_type=output_type)
+            except UserError as e:
+                if output_mode == "native" and "Native structured output is not supported" in str(e):
+                    result = await a.run(current_msg, output_type=_structured_output_type(output_schema, "prompted"))
+                else:
+                    raise
+            try:
+                primitives.reject_unresolved_async_placeholders(result.output)
+                primitives.validate_json_schema_subset(output_schema, result.output)
+            except ValueError as e:
+                validation_error = e
+                current_msg = _structured_retry_prompt(user_msg, output_schema, e, attempt + 1)
+            else:
+                return result.output
+
+        if validation_error is not None:
+            raise validation_error
+        raise ValueError("structured completion failed without a validation error")
 
     primitives._complete_fn = _do_complete
+
+
+def _structured_output_type(output_schema: dict[str, Any], output_mode: str) -> Any:
+    structured = StructuredDict(output_schema)
+    if output_mode == "native":
+        return NativeOutput(structured)
+    if output_mode == "prompted":
+        return PromptedOutput(structured)
+    raise ValueError("complete output_mode must be 'native' or 'prompted'")
+
+
+def _structured_retry_prompt(user_msg: str, output_schema: dict[str, Any], error: ValueError, attempt: int) -> str:
+    return (
+        f"{user_msg}\n\n"
+        f"The previous structured output attempt {attempt} did not match the schema: {error}.\n"
+        "Return a value that satisfies this JSON schema exactly.\n\n"
+        f"<json_schema>\n{json.dumps(output_schema, indent=2)}\n</json_schema>"
+    )

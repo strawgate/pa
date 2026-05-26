@@ -10,6 +10,8 @@ _DEFAULT_TIMEOUT_S = 30.0
 
 # Injected at build time by runtime.py — holds a callable that performs a completion.
 _complete_fn: Any = None
+_ASYNC_PLACEHOLDER_PREFIXES = ("<coroutine ",)
+_ASYNC_PLACEHOLDER_MARKERS = ("external_future(",)
 
 
 async def read_file(*, path: str) -> str:
@@ -76,15 +78,115 @@ async def http_get(*, url: str, timeout_s: float = _DEFAULT_TIMEOUT_S) -> dict[s
     return {"status": resp.status_code, "body": body, "content_type": resp.headers.get("content-type", "")}
 
 
-async def complete(*, prompt: str, system: str = "", data: str = "") -> str:
-    """Perform an LLM completion. Returns the model's text response.
+async def complete(
+    *,
+    prompt: str,
+    system: str = "",
+    data: str = "",
+    output_schema: dict[str, Any] | None = None,
+    output_mode: str = "native",
+) -> Any:
+    """Perform an LLM completion. Returns text, or a validated dict when `output_schema` is provided.
 
     Args:
         prompt: The user message / instruction to send.
         system: Optional system message to set context for the completion.
         data: Optional data payload (stringified objects, file contents, etc.)
               appended to the prompt so the model can process it.
+        output_schema: Optional JSON object schema for structured output.
+        output_mode: Structured output mode. `native` tries provider-native JSON
+              schema first and falls back to prompted JSON when unsupported;
+              `prompted` uses prompt-based structured output directly.
     """
     if _complete_fn is None:
         return "ERROR: completion function not configured"
-    return await _complete_fn(prompt, system, data)
+    return await _complete_fn(prompt, system, data, output_schema, output_mode)
+
+
+def find_unresolved_async_placeholder(value: Any, *, path: str = "$") -> str | None:
+    """Find Monty/Python coroutine placeholders caused by missing `await`."""
+    if isinstance(value, str) and (
+        value.startswith(_ASYNC_PLACEHOLDER_PREFIXES) or any(marker in value for marker in _ASYNC_PLACEHOLDER_MARKERS)
+    ):
+        return f"{path}: unresolved async value {value!r}; did you forget to await an async primitive?"
+    if isinstance(value, dict):
+        for key, item in value.items():
+            found = find_unresolved_async_placeholder(item, path=f"{path}.{key}")
+            if found:
+                return found
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            found = find_unresolved_async_placeholder(item, path=f"{path}[{i}]")
+            if found:
+                return found
+    return None
+
+
+def reject_unresolved_async_placeholders(value: Any) -> None:
+    if found := find_unresolved_async_placeholder(value):
+        raise ValueError(found)
+
+
+def validate_json_schema_subset(schema: dict[str, Any], value: Any, *, path: str = "$") -> None:
+    """Validate common JSON-schema constraints used by pa self-authored tools."""
+    reject_unresolved_async_placeholders(value)
+
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValueError(f"{path}: expected one of {schema['enum']!r}, got {value!r}")
+
+    typ = schema.get("type")
+    if isinstance(typ, list):
+        errors = []
+        for option in typ:
+            try:
+                validate_json_schema_subset({**schema, "type": option}, value, path=path)
+            except ValueError as e:
+                errors.append(str(e))
+            else:
+                return
+        raise ValueError(f"{path}: did not match any allowed type: {'; '.join(errors)}")
+
+    if typ == "null":
+        if value is not None:
+            raise ValueError(f"{path}: expected null, got {type(value).__name__}")
+        return
+    if typ == "boolean":
+        if not isinstance(value, bool):
+            raise ValueError(f"{path}: expected boolean, got {type(value).__name__}")
+        return
+    if typ == "integer":
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"{path}: expected integer, got {type(value).__name__}")
+        return
+    if typ == "number":
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError(f"{path}: expected number, got {type(value).__name__}")
+        return
+    if typ == "string":
+        if not isinstance(value, str):
+            raise ValueError(f"{path}: expected string, got {type(value).__name__}")
+        return
+    if typ == "array":
+        if not isinstance(value, list):
+            raise ValueError(f"{path}: expected array, got {type(value).__name__}")
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for i, item in enumerate(value):
+                validate_json_schema_subset(item_schema, item, path=f"{path}[{i}]")
+        return
+    if typ == "object" or "properties" in schema:
+        if not isinstance(value, dict):
+            raise ValueError(f"{path}: expected object, got {type(value).__name__}")
+        properties = schema.get("properties", {})
+        if not isinstance(properties, dict):
+            raise ValueError(f"{path}: schema properties must be an object")
+        for required in schema.get("required", []):
+            if required not in value:
+                raise ValueError(f"{path}: missing required field {required!r}")
+        if schema.get("additionalProperties") is False:
+            extra = sorted(set(value) - set(properties))
+            if extra:
+                raise ValueError(f"{path}: unexpected field(s): {', '.join(extra)}")
+        for key, item_schema in properties.items():
+            if key in value and isinstance(item_schema, dict):
+                validate_json_schema_subset(item_schema, value[key], path=f"{path}.{key}")

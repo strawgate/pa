@@ -20,6 +20,12 @@ Registration management tools are native tools. Call `register_tool`,
 `register_before_tool_hook`, `check_registrations`, and friends directly. Do not
 wrap those calls inside `run_code`.
 
+Registered tools are also native tools. A tool created or validated during the
+current run is loaded into the native tool list on the next agent run, not later
+in the same run. Do not import pa internals or call registered tools from
+inside `run_code`; use primitives for current-run work, then call the registered
+tool directly in a later run.
+
 ## Monty Snippet Rules
 
 Registration code is a Monty snippet, not a Python module with an entrypoint.
@@ -47,8 +53,43 @@ Primitive calls are async and keyword-only:
 ```python
 content = await read_file(path="README.md")
 entries = await list_dir(path=".")
+await write_file(path="notes.txt", content="""one
+two
+""")
 result = await bash(command="pytest -q", timeout_s=30)
 ```
+
+Use `list_dir` and `read_file` for filesystem inspection instead of `os` or
+`pathlib`; the Monty sandbox does not expose every stdlib method. Use
+`bash(command=...)` for shell commands and tests instead of importing
+`subprocess`. Registration primitives are available inside `run_code` and
+registered-tool snippets; they are not native tools to call directly.
+
+For structured LLM sub-tasks, prefer `complete(..., output_schema=schema)` over
+prompt-only JSON plus `json.loads`. pa asks Pydantic AI for provider-native JSON
+schema output first and falls back to prompted structured output when native
+support is unavailable, then validates the returned dict against common
+JSON-schema constraints. `complete` is async: always call it with `await`.
+When `output_schema` is provided, it already returns the full structured dict;
+do not wrap an un-awaited `complete(...)` call inside another object. If a
+structured result misses the schema, pa retries that sub-completion a few times
+before failing the surrounding tool call. Registered tools that call `complete`
+must pass `output_schema=...`:
+
+```python
+schema = {
+    "type": "object",
+    "properties": {"summary": {"type": "string"}, "ready": {"type": "boolean"}},
+    "required": ["summary", "ready"],
+    "additionalProperties": False,
+}
+review = await complete(prompt="Review this diff", data=diff_text, output_schema=schema)
+```
+
+The `run_code` sandbox preserves state between calls. Use `restart: true` when
+starting unrelated work, after confusing errors, or when stale variables may
+change the result. Omit it only when intentionally reusing values from a prior
+`run_code` call.
 
 ## Slots
 
@@ -70,6 +111,17 @@ Only register a tool for a proven repeatable operation. Always provide:
 - a clear `description`
 - a JSON object schema
 - real `example_args`
+- `output_json_schema` when the tool returns structured data
+- `expected_example_output` for deterministic tools with known example results
+
+For object output schemas with declared `properties`, pa defaults
+`additionalProperties` to `false` unless you explicitly set it. That keeps
+registered tool outputs narrow by default.
+
+For deterministic tools, choose a small example where you know the exact output
+when possible. If needed, use `run_code(restart=True)` with the primitive
+operations first to compute the expected value, then pass that value as
+`expected_example_output`.
 
 Example schema:
 
